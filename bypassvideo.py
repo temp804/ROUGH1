@@ -23,15 +23,44 @@ st.set_page_config(
 # Custom CSS for modern UI aesthetic & Hiding GitHub/Header elements
 st.markdown("""
 <style>
-    /* Hide top Streamlit header, GitHub icon badge, and menu */
+    /* Hide top Streamlit header, GitHub icon badge, menu, and ALL branding */
     #MainMenu {visibility: hidden; display: none !important;}
     header {visibility: hidden; display: none !important;}
     footer {visibility: hidden; display: none !important;}
-    .viewerBadge_container__1QSob, .viewerBadge_link__1S137, [data-testid="stHeaderActionElements"], 
-    [data-testid="stToolbar"], [data-testid="stStatusWidget"], [data-testid="stDecoration"], 
-    .stAppDeployButton, #stDecoration, [data-testid="manage-app-button"] {
+
+    /* Hide viewer badge (profile avatar bottom-right) and Streamlit red branding button */
+    .viewerBadge_container__1QSob,
+    .viewerBadge_link__1S137,
+    .viewerBadge_text__1JaDK,
+    [data-testid="stHeaderActionElements"],
+    [data-testid="stToolbar"],
+    [data-testid="stStatusWidget"],
+    [data-testid="stDecoration"],
+    [data-testid="stAppViewBlockContainer"] > div > div > div > div > div > a,
+    .stAppDeployButton,
+    #stDecoration,
+    [data-testid="manage-app-button"],
+    [data-testid="stAppDeployButton"],
+    [data-testid="stActionButtonIcon"],
+    /* Streamlit viewer badge - bottom right profile icon */
+    div[class*="viewerBadge"],
+    a[class*="viewerBadge"],
+    /* Streamlit "Made with Streamlit" red button */
+    div[class*="streamlitAppCreator"],
+    a[class*="streamlitAppCreator"],
+    div[class*="AppCreator"],
+    a[class*="AppCreator"],
+    /* Generic bottom-right fixed branding buttons */
+    .st-emotion-cache-zq5wmm,
+    .st-emotion-cache-1wbqy5l,
+    .st-emotion-cache-h4xjwg,
+    [data-testid="stBottom"] {
         display: none !important;
         visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        width: 0 !important;
+        height: 0 !important;
     }
     
     /* Adjust top padding since header is hidden */
