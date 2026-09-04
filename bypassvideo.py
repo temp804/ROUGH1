@@ -20,25 +20,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS + JS to hide viewer badge profile icon
+# Hide all Streamlit branding, header icons, viewer badge
 st.markdown("""
 <style>
-    /* Hide Streamlit header, menu, footer */
-    #MainMenu {visibility: hidden; display: none !important;}
-    header {visibility: hidden; display: none !important;}
-    footer {visibility: hidden; display: none !important;}
+    /* ── 1. NUKE THE ENTIRE TOP HEADER BAR (GitHub icon + Crown icon live here) ── */
+    header[data-testid="stHeader"] {
+        visibility: hidden !important;
+        height: 0px !important;
+        min-height: 0px !important;
+        padding: 0px !important;
+        overflow: hidden !important;
+    }
 
-    /* ── VIEWER BADGE (GitHub profile icon bottom-right) ── */
-    /* Old class names */
-    .viewerBadge_container__1QSob,
-    .viewerBadge_link__1S137,
-    .viewerBadge_text__1JaDK,
-    .styles_viewerBadge__1yB5_,
-    /* New emotion-cache names - wildcard */
-    div[class*="viewerBadge"],
-    span[class*="viewerBadge"],
-    a[class*="viewerBadge"],
-    /* data-testid selectors */
+    /* ── 2. HIDE ALL BUTTONS & LINKS INSIDE THE HEADER (secondary safety) ── */
+    div[data-testid="stAppDeployButton"],
+    header button,
+    header a,
     [data-testid="stHeaderActionElements"],
     [data-testid="stToolbar"],
     [data-testid="stStatusWidget"],
@@ -47,16 +44,25 @@ st.markdown("""
     [data-testid="stAppDeployButton"],
     [data-testid="stActionButtonIcon"],
     .stAppDeployButton,
-    #stDecoration {
+    #stDecoration,
+    /* Viewer badge class variants */
+    .viewerBadge_container__1QSob,
+    .viewerBadge_link__1S137,
+    .viewerBadge_text__1JaDK,
+    .styles_viewerBadge__1yB5_,
+    div[class*="viewerBadge"],
+    span[class*="viewerBadge"],
+    a[class*="viewerBadge"] {
         display: none !important;
         visibility: hidden !important;
-        opacity: 0 !important;
         pointer-events: none !important;
-        width: 0 !important;
-        height: 0 !important;
     }
 
-    /* Hide any fixed-position anchor that links to github.com, streamlit.io, or streamlit.app */
+    /* ── 3. HIDE MENU & FOOTER ── */
+    #MainMenu {visibility: hidden !important; display: none !important;}
+    footer {visibility: hidden !important; display: none !important;}
+
+    /* ── 4. BLOCK EXTERNAL BADGE LINKS (streamlit.app profile redirect) ── */
     a[href*="github.com"],
     a[href*="share.streamlit.io/user"],
     a[href*="streamlit.app"] {
@@ -65,11 +71,29 @@ st.markdown("""
         pointer-events: none !important;
     }
 
-    /* Adjust top padding since header is hidden */
+    /* ── 5. CLICK-BLOCKER OVERLAY on bottom-right corner ──
+       Transparent wall over the badge area. Max z-index.
+       Even if badge is visible, tapping does NOTHING. */
+    body::after {
+        content: '';
+        position: fixed;
+        bottom: 0;
+        right: 0;
+        width: 160px;
+        height: 160px;
+        z-index: 2147483647;
+        background: transparent;
+        cursor: default;
+        pointer-events: all;
+        display: block;
+    }
+
+    /* ── 6. REMOVE TOP PADDING (since header is now 0px height) ── */
     .block-container {
         padding-top: 1.5rem !important;
     }
 
+    /* ── App styles ── */
     .main-header {
         font-size: 2.2rem;
         font-weight: 700;
@@ -101,26 +125,6 @@ st.markdown("""
     }
     .stProgress > div > div > div > div {
         background-color: #FF4B4B;
-    }
-
-    /* ═══════════════════════════════════════════════════════
-       CLICK-BLOCKER OVERLAY — covers bottom-right corner
-       where Streamlit viewer badge sits.
-       Transparent but intercepts ALL touch/click events.
-       z-index max (2147483647) ensures it's always on top.
-    ═══════════════════════════════════════════════════════ */
-    body::after {
-        content: '';
-        position: fixed;
-        bottom: 0;
-        right: 0;
-        width: 160px;
-        height: 160px;
-        z-index: 2147483647;
-        background: transparent;
-        cursor: default;
-        pointer-events: all;
-        display: block;
     }
 </style>
 """, unsafe_allow_html=True)
