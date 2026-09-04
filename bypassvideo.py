@@ -20,22 +20,33 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Hide all Streamlit branding, header icons, viewer badge
+# Aggressive branding lockdown — hides all Streamlit icons + blocks badge taps
 st.markdown("""
 <style>
-    /* ── 1. NUKE THE ENTIRE TOP HEADER BAR (GitHub icon + Crown icon live here) ── */
-    header[data-testid="stHeader"] {
+    /* 1. Hide the core header container across both mobile and desktop structures */
+    header[data-testid="stHeader"],
+    .stHeader,
+    div[class*="stHeader"] {
         visibility: hidden !important;
+        display: none !important;
+        opacity: 0 !important;
         height: 0px !important;
         min-height: 0px !important;
-        padding: 0px !important;
+        pointer-events: none !important;
         overflow: hidden !important;
     }
 
-    /* ── 2. HIDE ALL BUTTONS & LINKS INSIDE THE HEADER (secondary safety) ── */
+    /* 2. Target specific deployment badges and profile icons */
     div[data-testid="stAppDeployButton"],
-    header button,
+    div[class*="viewerBadge"],
+    span[class*="viewerBadge"],
+    a[class*="viewerBadge"],
+    .viewerBadge_container__1QSob,
+    .viewerBadge_link__1S137,
+    .viewerBadge_text__1JaDK,
+    .styles_viewerBadge__1yB5_,
     header a,
+    header button,
     [data-testid="stHeaderActionElements"],
     [data-testid="stToolbar"],
     [data-testid="stStatusWidget"],
@@ -44,25 +55,13 @@ st.markdown("""
     [data-testid="stAppDeployButton"],
     [data-testid="stActionButtonIcon"],
     .stAppDeployButton,
-    #stDecoration,
-    /* Viewer badge class variants */
-    .viewerBadge_container__1QSob,
-    .viewerBadge_link__1S137,
-    .viewerBadge_text__1JaDK,
-    .styles_viewerBadge__1yB5_,
-    div[class*="viewerBadge"],
-    span[class*="viewerBadge"],
-    a[class*="viewerBadge"] {
+    #stDecoration {
         display: none !important;
         visibility: hidden !important;
         pointer-events: none !important;
     }
 
-    /* ── 3. HIDE MENU & FOOTER ── */
-    #MainMenu {visibility: hidden !important; display: none !important;}
-    footer {visibility: hidden !important; display: none !important;}
-
-    /* ── 4. BLOCK EXTERNAL BADGE LINKS (streamlit.app profile redirect) ── */
+    /* 3. Block external badge links (the streamlit.app redirect URL) */
     a[href*="github.com"],
     a[href*="share.streamlit.io/user"],
     a[href*="streamlit.app"] {
@@ -71,20 +70,23 @@ st.markdown("""
         pointer-events: none !important;
     }
 
-    /* ── 5. CLICK-BLOCKER OVERLAY on bottom-right corner ──
-       Transparent wall over the badge area. Max z-index.
-       Even if badge is visible, tapping does NOTHING. */
+    /* 4. Strip the default Streamlit footer and hamburger menu */
+    #MainMenu {visibility: hidden !important; display: none !important;}
+    footer {visibility: hidden !important; display: none !important;}
+
+    /* 5. FAIL-SAFE: Invisible physical wall at the bottom-right corner.
+       Intercepts ALL clicks/touches before they reach the badge underneath.
+       pointer-events: auto swallows the tap — nothing gets through. */
     body::after {
-        content: '';
+        content: "";
         position: fixed;
         bottom: 0;
         right: 0;
-        width: 160px;
-        height: 160px;
-        z-index: 2147483647;
-        background: transparent;
-        cursor: default;
-        pointer-events: all;
+        width: 200px;
+        height: 80px;
+        background: transparent !important;
+        z-index: 2147483647 !important;
+        pointer-events: auto !important;
         display: block;
     }
 
