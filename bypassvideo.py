@@ -20,9 +20,25 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for modern UI aesthetic
+# Custom CSS for modern UI aesthetic & Hiding GitHub/Header elements
 st.markdown("""
 <style>
+    /* Hide top Streamlit header, GitHub icon badge, and menu */
+    #MainMenu {visibility: hidden; display: none !important;}
+    header {visibility: hidden; display: none !important;}
+    footer {visibility: hidden; display: none !important;}
+    .viewerBadge_container__1QSob, .viewerBadge_link__1S137, [data-testid="stHeaderActionElements"], 
+    [data-testid="stToolbar"], [data-testid="stStatusWidget"], [data-testid="stDecoration"], 
+    .stAppDeployButton, #stDecoration, [data-testid="manage-app-button"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    
+    /* Adjust top padding since header is hidden */
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
+
     .main-header {
         font-size: 2.2rem;
         font-weight: 700;
