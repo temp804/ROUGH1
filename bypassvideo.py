@@ -20,47 +20,47 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for modern UI aesthetic & Hiding GitHub/Header elements
+# Custom CSS + JS to hide viewer badge profile icon
 st.markdown("""
 <style>
-    /* Hide top Streamlit header, GitHub icon badge, menu, and ALL branding */
+    /* Hide Streamlit header, menu, footer */
     #MainMenu {visibility: hidden; display: none !important;}
     header {visibility: hidden; display: none !important;}
     footer {visibility: hidden; display: none !important;}
 
-    /* Hide viewer badge (profile avatar bottom-right) and Streamlit red branding button */
+    /* ── VIEWER BADGE (GitHub profile icon bottom-right) ── */
+    /* Old class names */
     .viewerBadge_container__1QSob,
     .viewerBadge_link__1S137,
     .viewerBadge_text__1JaDK,
+    .styles_viewerBadge__1yB5_,
+    /* New emotion-cache names - wildcard */
+    div[class*="viewerBadge"],
+    span[class*="viewerBadge"],
+    a[class*="viewerBadge"],
+    /* data-testid selectors */
     [data-testid="stHeaderActionElements"],
     [data-testid="stToolbar"],
     [data-testid="stStatusWidget"],
     [data-testid="stDecoration"],
-    [data-testid="stAppViewBlockContainer"] > div > div > div > div > div > a,
-    .stAppDeployButton,
-    #stDecoration,
     [data-testid="manage-app-button"],
     [data-testid="stAppDeployButton"],
     [data-testid="stActionButtonIcon"],
-    /* Streamlit viewer badge - bottom right profile icon */
-    div[class*="viewerBadge"],
-    a[class*="viewerBadge"],
-    /* Streamlit "Made with Streamlit" red button */
-    div[class*="streamlitAppCreator"],
-    a[class*="streamlitAppCreator"],
-    div[class*="AppCreator"],
-    a[class*="AppCreator"],
-    /* Generic bottom-right fixed branding buttons */
-    .st-emotion-cache-zq5wmm,
-    .st-emotion-cache-1wbqy5l,
-    .st-emotion-cache-h4xjwg,
-    [data-testid="stBottom"] {
+    .stAppDeployButton,
+    #stDecoration {
         display: none !important;
         visibility: hidden !important;
         opacity: 0 !important;
         pointer-events: none !important;
         width: 0 !important;
         height: 0 !important;
+    }
+
+    /* Hide any fixed-position anchor that links to github.com or share.streamlit.io/user */
+    a[href*="github.com"],
+    a[href*="share.streamlit.io/user"] {
+        display: none !important;
+        visibility: hidden !important;
     }
     
     /* Adjust top padding since header is hidden */
@@ -101,6 +101,39 @@ st.markdown("""
         background-color: #FF4B4B;
     }
 </style>
+""", unsafe_allow_html=True)
+
+# JavaScript: MutationObserver to remove viewer badge DYNAMICALLY as soon as it appears
+st.markdown("""
+<script>
+(function() {
+    function hideViewerBadge() {
+        // Target the viewer badge by href pattern (links to github.com profile)
+        document.querySelectorAll('a[href*="github.com"], a[href*="share.streamlit.io/user"]').forEach(function(el) {
+            // Only hide if it looks like a badge (small element, not a user-added link)
+            var parent = el.closest('div');
+            if (parent) parent.style.cssText = 'display:none!important;visibility:hidden!important;';
+            el.style.cssText = 'display:none!important;visibility:hidden!important;';
+        });
+        // Target by class wildcard
+        document.querySelectorAll('[class*="viewerBadge"]').forEach(function(el) {
+            el.style.cssText = 'display:none!important;visibility:hidden!important;';
+        });
+    }
+    // Run immediately
+    hideViewerBadge();
+    // Also run after DOM changes (Streamlit loads things dynamically)
+    var observer = new MutationObserver(function(mutations) {
+        hideViewerBadge();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    // Also run after delays
+    setTimeout(hideViewerBadge, 500);
+    setTimeout(hideViewerBadge, 1000);
+    setTimeout(hideViewerBadge, 2000);
+    setTimeout(hideViewerBadge, 3000);
+})();
+</script>
 """, unsafe_allow_html=True)
 
 try:
