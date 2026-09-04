@@ -103,57 +103,93 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── HIDE VIEWER BADGE via iframe JS (only way to run real JS in Streamlit) ──
+# ── NEUTRALIZE VIEWER BADGE (hide it + disable click if it stays visible) ──
 import streamlit.components.v1 as _components
 _components.html("""
 <script>
 (function() {
-    function hideViewerBadge() {
+    function neutralizeViewerBadge() {
         try {
             var doc = window.parent.document;
-            // 1. Target by class wildcard (viewerBadge in class name)
+
+            // ── STRATEGY 1: Hide by class wildcard ──
             doc.querySelectorAll('[class*="viewerBadge"]').forEach(function(el) {
                 el.style.setProperty('display', 'none', 'important');
+                el.style.setProperty('visibility', 'hidden', 'important');
+                el.style.setProperty('pointer-events', 'none', 'important');
                 if (el.parentElement) {
                     el.parentElement.style.setProperty('display', 'none', 'important');
                 }
             });
-            // 2. Target the anchor links that go to github profile or streamlit user profile
+
+            // ── STRATEGY 2: Find all <a> tags linking to github/streamlit profile ──
             doc.querySelectorAll('a').forEach(function(a) {
                 var href = a.getAttribute('href') || '';
                 if (href.indexOf('github.com') !== -1 || href.indexOf('share.streamlit.io/user') !== -1) {
+                    // Try to hide
                     a.style.setProperty('display', 'none', 'important');
                     var p = a.parentElement;
                     if (p) p.style.setProperty('display', 'none', 'important');
-                    var pp = p && p.parentElement;
-                    if (pp) pp.style.setProperty('display', 'none', 'important');
+                    // Fallback: neutralize the click even if it stays visible
+                    a.removeAttribute('href');
+                    a.removeAttribute('target');
+                    a.style.setProperty('pointer-events', 'none', 'important');
+                    a.style.setProperty('cursor', 'default', 'important');
+                    a.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); return false; }, true);
                 }
             });
-            // 3. Target img elements that are circular badges (small size, avatar-like)
+
+            // ── STRATEGY 3: Hide avatar images (GitHub profile pictures) ──
             doc.querySelectorAll('img').forEach(function(img) {
                 var src = img.getAttribute('src') || '';
                 if (src.indexOf('githubusercontent.com') !== -1 || src.indexOf('avatars') !== -1) {
-                    var p = img.closest('a') || img.parentElement;
-                    if (p) p.style.setProperty('display', 'none', 'important');
+                    var anchor = img.closest('a') || img.parentElement;
+                    if (anchor) {
+                        anchor.style.setProperty('display', 'none', 'important');
+                        anchor.removeAttribute('href');
+                        anchor.style.setProperty('pointer-events', 'none', 'important');
+                        anchor.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); return false; }, true);
+                    }
+                    img.style.setProperty('display', 'none', 'important');
                 }
             });
+
+            // ── STRATEGY 4: Block all fixed-position bottom-right clickable elements ──
+            doc.querySelectorAll('a, button').forEach(function(el) {
+                var rect = el.getBoundingClientRect();
+                var winW = window.parent.innerWidth;
+                var winH = window.parent.innerHeight;
+                // If element is in bottom-right quadrant and small (badge-like)
+                if (rect.right > winW * 0.6 && rect.bottom > winH * 0.7 &&
+                    rect.width < 80 && rect.height < 80 && rect.width > 0) {
+                    var href = el.getAttribute('href') || '';
+                    // Only neutralize external links (not our app links)
+                    if (href.indexOf('streamlit.io') !== -1 || href.indexOf('github.com') !== -1) {
+                        el.removeAttribute('href');
+                        el.style.setProperty('pointer-events', 'none', 'important');
+                        el.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); return false; }, true);
+                    }
+                }
+            });
+
         } catch(e) {}
     }
 
-    // Run immediately and repeatedly
-    hideViewerBadge();
-    [200, 500, 1000, 1500, 2000, 3000, 5000].forEach(function(t) {
-        setTimeout(hideViewerBadge, t);
+    // Run immediately and at multiple delays (badge loads async)
+    neutralizeViewerBadge();
+    [100, 300, 500, 800, 1000, 1500, 2000, 3000, 5000].forEach(function(t) {
+        setTimeout(neutralizeViewerBadge, t);
     });
 
-    // Watch for DOM changes and hide badge when it appears
+    // MutationObserver: re-run whenever DOM changes
     try {
-        var observer = new MutationObserver(function() { hideViewerBadge(); });
+        var observer = new MutationObserver(function() { neutralizeViewerBadge(); });
         observer.observe(window.parent.document.body, { childList: true, subtree: true });
     } catch(e) {}
 })();
 </script>
 """, height=0, scrolling=False)
+
 
 try:
     import yt_dlp
