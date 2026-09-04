@@ -103,38 +103,57 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# JavaScript: MutationObserver to remove viewer badge DYNAMICALLY as soon as it appears
-st.markdown("""
+# ── HIDE VIEWER BADGE via iframe JS (only way to run real JS in Streamlit) ──
+import streamlit.components.v1 as _components
+_components.html("""
 <script>
 (function() {
     function hideViewerBadge() {
-        // Target the viewer badge by href pattern (links to github.com profile)
-        document.querySelectorAll('a[href*="github.com"], a[href*="share.streamlit.io/user"]').forEach(function(el) {
-            // Only hide if it looks like a badge (small element, not a user-added link)
-            var parent = el.closest('div');
-            if (parent) parent.style.cssText = 'display:none!important;visibility:hidden!important;';
-            el.style.cssText = 'display:none!important;visibility:hidden!important;';
-        });
-        // Target by class wildcard
-        document.querySelectorAll('[class*="viewerBadge"]').forEach(function(el) {
-            el.style.cssText = 'display:none!important;visibility:hidden!important;';
-        });
+        try {
+            var doc = window.parent.document;
+            // 1. Target by class wildcard (viewerBadge in class name)
+            doc.querySelectorAll('[class*="viewerBadge"]').forEach(function(el) {
+                el.style.setProperty('display', 'none', 'important');
+                if (el.parentElement) {
+                    el.parentElement.style.setProperty('display', 'none', 'important');
+                }
+            });
+            // 2. Target the anchor links that go to github profile or streamlit user profile
+            doc.querySelectorAll('a').forEach(function(a) {
+                var href = a.getAttribute('href') || '';
+                if (href.indexOf('github.com') !== -1 || href.indexOf('share.streamlit.io/user') !== -1) {
+                    a.style.setProperty('display', 'none', 'important');
+                    var p = a.parentElement;
+                    if (p) p.style.setProperty('display', 'none', 'important');
+                    var pp = p && p.parentElement;
+                    if (pp) pp.style.setProperty('display', 'none', 'important');
+                }
+            });
+            // 3. Target img elements that are circular badges (small size, avatar-like)
+            doc.querySelectorAll('img').forEach(function(img) {
+                var src = img.getAttribute('src') || '';
+                if (src.indexOf('githubusercontent.com') !== -1 || src.indexOf('avatars') !== -1) {
+                    var p = img.closest('a') || img.parentElement;
+                    if (p) p.style.setProperty('display', 'none', 'important');
+                }
+            });
+        } catch(e) {}
     }
-    // Run immediately
+
+    // Run immediately and repeatedly
     hideViewerBadge();
-    // Also run after DOM changes (Streamlit loads things dynamically)
-    var observer = new MutationObserver(function(mutations) {
-        hideViewerBadge();
+    [200, 500, 1000, 1500, 2000, 3000, 5000].forEach(function(t) {
+        setTimeout(hideViewerBadge, t);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
-    // Also run after delays
-    setTimeout(hideViewerBadge, 500);
-    setTimeout(hideViewerBadge, 1000);
-    setTimeout(hideViewerBadge, 2000);
-    setTimeout(hideViewerBadge, 3000);
+
+    // Watch for DOM changes and hide badge when it appears
+    try {
+        var observer = new MutationObserver(function() { hideViewerBadge(); });
+        observer.observe(window.parent.document.body, { childList: true, subtree: true });
+    } catch(e) {}
 })();
 </script>
-""", unsafe_allow_html=True)
+""", height=0, scrolling=False)
 
 try:
     import yt_dlp
