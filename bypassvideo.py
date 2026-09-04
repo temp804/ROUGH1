@@ -56,13 +56,15 @@ st.markdown("""
         height: 0 !important;
     }
 
-    /* Hide any fixed-position anchor that links to github.com or share.streamlit.io/user */
+    /* Hide any fixed-position anchor that links to github.com, streamlit.io, or streamlit.app */
     a[href*="github.com"],
-    a[href*="share.streamlit.io/user"] {
+    a[href*="share.streamlit.io/user"],
+    a[href*="streamlit.app"] {
         display: none !important;
         visibility: hidden !important;
+        pointer-events: none !important;
     }
-    
+
     /* Adjust top padding since header is hidden */
     .block-container {
         padding-top: 1.5rem !important;
@@ -99,6 +101,26 @@ st.markdown("""
     }
     .stProgress > div > div > div > div {
         background-color: #FF4B4B;
+    }
+
+    /* ═══════════════════════════════════════════════════════
+       CLICK-BLOCKER OVERLAY — covers bottom-right corner
+       where Streamlit viewer badge sits.
+       Transparent but intercepts ALL touch/click events.
+       z-index max (2147483647) ensures it's always on top.
+    ═══════════════════════════════════════════════════════ */
+    body::after {
+        content: '';
+        position: fixed;
+        bottom: 0;
+        right: 0;
+        width: 160px;
+        height: 160px;
+        z-index: 2147483647;
+        background: transparent;
+        cursor: default;
+        pointer-events: all;
+        display: block;
     }
 </style>
 """, unsafe_allow_html=True)
