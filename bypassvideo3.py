@@ -10,8 +10,18 @@ import subprocess
 import time
 import tempfile
 import threading
+import socket
+import json
+import uuid
+import random
+import io
+import base64
+import http.server
+import socketserver
+import urllib.parse
 from typing import Dict, Any, Optional
 import streamlit as st
+import qrcode
 
 # Configure page settings
 st.set_page_config(
@@ -128,6 +138,31 @@ st.markdown("""
     }
     .stProgress > div > div > div > div {
         background-color: #FF4B4B;
+    }
+    .share-pin-box {
+        text-align: center;
+        padding: 24px 20px;
+        background: linear-gradient(145deg, #1A1D24, #13151A);
+        border-radius: 14px;
+        border: 2px solid #FF4B4B44;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+        margin: 15px 0 25px 0;
+    }
+    .share-pin-code {
+        font-size: 3.6rem;
+        font-weight: 800;
+        letter-spacing: 12px;
+        color: #FF4B4B;
+        font-family: 'Consolas', 'Courier New', monospace;
+        margin: 8px 0;
+        text-shadow: 0 0 20px rgba(255, 75, 75, 0.4);
+    }
+    .share-file-card {
+        background: #1E2229;
+        border-radius: 10px;
+        border: 1px solid #2D3139;
+        padding: 16px 20px;
+        margin-bottom: 15px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -557,6 +592,289 @@ with st.sidebar.expander("🔒 SSTP VPN Gateway (Mobile & Laptop)", expanded=Tru
     retries = st.slider("Max Connection Retries", min_value=1, max_value=20, value=5)
     fragment_retries = st.slider("HLS/DASH Fragment Retries", min_value=1, max_value=30, value=15)
     rate_limit = st.text_input("Rate Limit (optional, e.g. 5M, 500K)", placeholder="Unlimited")
+
+# ----------------- 5GB SEND/RECEIVE FILE SHARING SUBSYSTEM -----------------
+SHARED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared_files")
+os.makedirs(SHARED_DIR, exist_ok=True)
+REGISTRY_FILE = os.path.join(SHARED_DIR, "shares_registry.json")
+
+class FileShareManager:
+    _lock = threading.Lock()
+
+    @staticmethod
+    def _load_registry() -> Dict[str, Any]:
+        if not os.path.exists(REGISTRY_FILE):
+            return {}
+        try:
+            with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _save_registry(data: Dict[str, Any]):
+        try:
+            with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    @classmethod
+    def generate_unique_code(cls) -> str:
+        with cls._lock:
+            reg = cls._load_registry()
+            for _ in range(100):
+                c = f"{random.randint(100000, 999999)}"
+                if c not in reg:
+                    return c
+            return str(int(time.time()))[-6:]
+
+    @classmethod
+    def create_share(cls, filepath: str = None, filename: str = None, expiry_seconds: int = 3600,
+                     one_time: bool = False, delete_on_expiry: bool = True, text_content: str = None) -> Dict[str, Any]:
+        with cls._lock:
+            reg = cls._load_registry()
+            code = f"{random.randint(100000, 999999)}"
+            while code in reg:
+                code = f"{random.randint(100000, 999999)}"
+            
+            share_id = uuid.uuid4().hex[:12]
+            size = os.path.getsize(filepath) if (filepath and os.path.exists(filepath)) else (len(text_content.encode('utf-8')) if text_content else 0)
+            
+            entry = {
+                "code": code,
+                "id": share_id,
+                "type": "text" if text_content is not None else "file",
+                "filename": filename or (os.path.basename(filepath) if filepath else "shared_text.txt"),
+                "filepath": os.path.abspath(filepath) if filepath else None,
+                "size": size,
+                "created_at": time.time(),
+                "expires_at": time.time() + expiry_seconds,
+                "one_time": one_time,
+                "delete_on_expiry": delete_on_expiry,
+                "downloads": 0,
+                "text_content": text_content
+            }
+            reg[code] = entry
+            cls._save_registry(reg)
+            return entry
+
+    @classmethod
+    def get_share(cls, code_or_id: str) -> Optional[Dict[str, Any]]:
+        clean = code_or_id.strip().replace(" ", "").replace("-", "")
+        with cls._lock:
+            reg = cls._load_registry()
+            entry = reg.get(clean)
+            if not entry:
+                for k, v in reg.items():
+                    if v.get("id") == clean:
+                        entry = v
+                        break
+            if not entry:
+                return None
+            if time.time() > entry.get("expires_at", 0):
+                cls._delete_share_unlocked(reg, entry.get("code"))
+                return None
+            return entry
+
+    @classmethod
+    def record_download(cls, code: str):
+        with cls._lock:
+            reg = cls._load_registry()
+            if code in reg:
+                reg[code]["downloads"] = reg[code].get("downloads", 0) + 1
+                if reg[code].get("one_time") and reg[code]["downloads"] >= 1:
+                    cls._delete_share_unlocked(reg, code)
+                else:
+                    cls._save_registry(reg)
+
+    @classmethod
+    def delete_share(cls, code: str):
+        with cls._lock:
+            reg = cls._load_registry()
+            cls._delete_share_unlocked(reg, code)
+
+    @classmethod
+    def _delete_share_unlocked(cls, reg: dict, code: str):
+        if code in reg:
+            entry = reg.pop(code)
+            if entry.get("delete_on_expiry") and entry.get("filepath") and os.path.exists(entry["filepath"]):
+                try:
+                    os.remove(entry["filepath"])
+                except Exception:
+                    pass
+            cls._save_registry(reg)
+
+    @classmethod
+    def get_all_active(cls) -> list:
+        with cls._lock:
+            reg = cls._load_registry()
+            now = time.time()
+            active = []
+            expired = []
+            for code, entry in reg.items():
+                if now > entry.get("expires_at", 0):
+                    expired.append(code)
+                else:
+                    active.append(entry)
+            for code in expired:
+                cls._delete_share_unlocked(reg, code)
+            return sorted(active, key=lambda x: x.get("created_at", 0), reverse=True)
+
+    @classmethod
+    def cleanup_expired_shares(cls):
+        with cls._lock:
+            reg = cls._load_registry()
+            now = time.time()
+            expired = [c for c, e in reg.items() if now > e.get("expires_at", 0)]
+            for c in expired:
+                cls._delete_share_unlocked(reg, c)
+
+class ResumableFileServerHandler(http.server.SimpleHTTPRequestHandler):
+    def translate_path(self, path):
+        parsed = urllib.parse.urlparse(path)
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if len(parts) >= 2 and parts[0] == "dl":
+            key = parts[1]
+            entry = FileShareManager.get_share(key)
+            if entry and entry.get("filepath") and os.path.exists(entry["filepath"]):
+                return os.path.abspath(entry["filepath"])
+        return super().translate_path(path)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if len(parts) >= 2 and parts[0] == "dl":
+            key = parts[1]
+            entry = FileShareManager.get_share(key)
+            if not entry:
+                self.send_error(404, "Sharing code expired or invalid.")
+                return
+            FileShareManager.record_download(entry.get("code"))
+        return super().do_GET()
+
+    def log_message(self, format, *args):
+        pass
+
+def get_local_network_ip() -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+def generate_qr_code_image_bytes(data_url: str) -> bytes:
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=7,
+        border=2,
+    )
+    qr.add_data(data_url)
+    qr.make(fit=True)
+    buf = io.BytesIO()
+    try:
+        # Explicitly request Pillow renderer — supports custom colors + format= kwarg
+        from qrcode.image.pil import PilImage
+        img = qr.make_image(image_factory=PilImage,
+                            fill_color=(255, 75, 75),
+                            back_color=(30, 34, 41))
+        img.save(buf, format="PNG")
+    except Exception:
+        # Fallback: pure PyPNG renderer (no format kwarg, monochrome)
+        img = qr.make_image()
+        img.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+_FILE_SERVER_PORT = None
+_SERVER_START_LOCK = threading.Lock()
+
+def ensure_file_server_running() -> int:
+    global _FILE_SERVER_PORT
+    with _SERVER_START_LOCK:
+        if _FILE_SERVER_PORT is not None:
+            return _FILE_SERVER_PORT
+        port = 8504
+        for p in range(8504, 8530):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("", p))
+                    port = p
+                    break
+            except OSError:
+                continue
+        try:
+            httpd = socketserver.ThreadingTCPServer(("", port), ResumableFileServerHandler)
+            t = threading.Thread(target=httpd.serve_forever, daemon=True)
+            t.start()
+            _FILE_SERVER_PORT = port
+        except Exception:
+            _FILE_SERVER_PORT = 8504
+
+        def cleanup_loop():
+            while True:
+                time.sleep(45)
+                try:
+                    FileShareManager.cleanup_expired_shares()
+                except Exception:
+                    pass
+        t_clean = threading.Thread(target=cleanup_loop, daemon=True)
+        t_clean.start()
+
+        return _FILE_SERVER_PORT
+
+def stream_upload_to_disk(uploaded_file, dest_path, progress_bar=None, status_text=None) -> int:
+    total_written = 0
+    chunk_size = 8 * 1024 * 1024  # 8MB chunk buffer
+    file_size = getattr(uploaded_file, "size", 0) or 0
+    start_time = time.time()
+
+    with open(dest_path, "wb") as f_out:
+        while True:
+            chunk = uploaded_file.read(chunk_size)
+            if not chunk:
+                break
+            f_out.write(chunk)
+            total_written += len(chunk)
+            elapsed = max(0.001, time.time() - start_time)
+            speed_mb = (total_written / (1024 * 1024)) / elapsed
+            if file_size > 0 and progress_bar:
+                pct = min(1.0, total_written / file_size)
+                progress_bar.progress(pct)
+                if status_text:
+                    status_text.text(f"Streaming to disk: {format_bytes_human(total_written)} / {format_bytes_human(file_size)} ({speed_mb:.1f} MB/s)")
+
+    if progress_bar:
+        progress_bar.progress(1.0)
+    return total_written
+
+def get_file_chunk_generator(filepath, chunk_size=4*1024*1024):
+    with open(filepath, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+def format_bytes_human(size_bytes: int) -> str:
+    if not size_bytes or size_bytes < 0:
+        return "0 B"
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+# Launch background resumable file streaming server
+STREAM_PORT = ensure_file_server_running()
+LOCAL_IP = get_local_network_ip()
 
 # ----------------- HELPER FUNCTIONS -----------------
 
@@ -998,7 +1316,12 @@ def fetch_media_info_with_failover(url: str, proxy_list: list) -> tuple[Optional
 st.markdown('<div class="main-header">🎬 Universal Video Downloader</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Download videos from YouTube, social media, adult platforms, and 1000+ sites with resolution control and anti-blocking bypass.</div>', unsafe_allow_html=True)
 
-tab_single, tab_batch, tab_guide = st.tabs(["🚀 Single URL Downloader", "📑 Batch Downloader", "📖 Bypass & Security Guide"])
+tab_single, tab_batch, tab_share, tab_guide = st.tabs([
+    "🚀 Single URL Downloader",
+    "📑 Batch Downloader",
+    "⚡ Send & Receive (5GB Fast Share)",
+    "📖 Bypass & Security Guide"
+])
 
 # ----------------- TAB 1: SINGLE DOWNLOADER -----------------
 with tab_single:
@@ -1338,7 +1661,275 @@ with tab_batch:
             
             st.success("🎉 Batch processing finished! Files saved in `downloads/` directory.")
 
-# ----------------- TAB 3: BYPASS GUIDE -----------------
+# ----------------- TAB 3: 5GB FAST FILE & CODE SHARING -----------------
+with tab_share:
+    st.subheader("⚡ Send & Receive: Fast 5GB File, Video & Code Sharing")
+    st.caption("Transfer files up to 5 GB, share downloaded videos instantly, or copy/paste code snippets between laptops and mobile phones in seconds using a 6-digit code or QR.")
+
+    share_tab_send, share_tab_recv, share_tab_manage = st.tabs([
+        "📤 Send (File, Video or Text)",
+        "📥 Receive (Enter 6-Digit Code)",
+        "📋 Active Transfers & Storage"
+    ])
+
+    # ── SUB-TAB 1: SEND ──
+    with share_tab_send:
+        send_type = st.radio(
+            "What would you like to share?",
+            [
+                "📁 Upload Any File (Up to 5 GB)",
+                "🎬 Instant-Share Downloaded Video (Zero Wait Time!)",
+                "📝 Quick Paste Text / Code / Clipboard"
+            ],
+            horizontal=True
+        )
+
+        col_cfg1, col_cfg2 = st.columns([2, 2])
+        with col_cfg1:
+            expiry_choice = st.selectbox(
+                "Link Expiry Time",
+                ["10 Minutes", "30 Minutes", "1 Hour (Recommended)", "6 Hours", "24 Hours"],
+                index=2
+            )
+            expiry_map = {
+                "10 Minutes": 600,
+                "30 Minutes": 1800,
+                "1 Hour (Recommended)": 3600,
+                "6 Hours": 21600,
+                "24 Hours": 86400
+            }
+            expiry_sec = expiry_map[expiry_choice]
+
+        with col_cfg2:
+            one_time_dl = st.checkbox("🗑️ Burn after reading (Delete automatically after 1st download)", value=False)
+
+        generated_share = None
+
+        if send_type == "📁 Upload Any File (Up to 5 GB)":
+            st.info("💡 **5 GB Chunked Streaming**: Files are streamed in 8MB chunks directly to local storage without loading into system RAM.")
+            uploaded_file = st.file_uploader(
+                "Select or Drag & Drop File (Any format, up to 5 GB)",
+                type=None,
+                help="Supports videos, zips, ISOs, documents, datasets up to 5GB"
+            )
+
+            if uploaded_file is not None:
+                file_size_fmt = format_bytes_human(getattr(uploaded_file, "size", 0))
+                st.caption(f"Selected: **{uploaded_file.name}** ({file_size_fmt})")
+
+                if st.button("🚀 Generate 6-Digit Code & Share File", type="primary", use_container_width=True):
+                    stream_progress = st.progress(0)
+                    stream_status = st.empty()
+                    safe_filename = uploaded_file.name.replace(" ", "_")
+                    code = FileShareManager.generate_unique_code()
+                    dest_file_path = os.path.join(SHARED_DIR, f"{code}_{safe_filename}")
+
+                    with st.spinner("Streaming file in 8MB chunks..."):
+                        bytes_saved = stream_upload_to_disk(uploaded_file, dest_file_path, stream_progress, stream_status)
+
+                    generated_share = FileShareManager.create_share(
+                        filepath=dest_file_path,
+                        filename=uploaded_file.name,
+                        expiry_seconds=expiry_sec,
+                        one_time=one_time_dl,
+                        delete_on_expiry=True
+                    )
+                    st.success("🎉 File ready for transfer!")
+
+        elif send_type == "🎬 Instant-Share Downloaded Video (Zero Wait Time!)":
+            existing_videos = [
+                f for f in os.listdir(DOWNLOADS_DIR)
+                if os.path.isfile(os.path.join(DOWNLOADS_DIR, f))
+            ] if os.path.exists(DOWNLOADS_DIR) else []
+
+            if not existing_videos:
+                st.warning("⚠️ No downloaded videos found in your `downloads/` folder. Download a video from Tab 1 or upload a file above!")
+            else:
+                video_options = {}
+                for f in existing_videos:
+                    sz = os.path.getsize(os.path.join(DOWNLOADS_DIR, f))
+                    video_options[f"{f} ({format_bytes_human(sz)})"] = f
+
+                selected_label = st.selectbox("Select Video to Share Instantly", list(video_options.keys()))
+                selected_file = video_options[selected_label]
+                selected_path = os.path.join(DOWNLOADS_DIR, selected_file)
+
+                st.info(f"⚡ **Zero Wait Time**: `{selected_file}` is already on your laptop. No re-upload needed!")
+
+                if st.button("🚀 Instant Share Video (Zero Upload Wait!)", type="primary", use_container_width=True):
+                    generated_share = FileShareManager.create_share(
+                        filepath=selected_path,
+                        filename=selected_file,
+                        expiry_seconds=expiry_sec,
+                        one_time=one_time_dl,
+                        delete_on_expiry=False  # Do not delete original downloaded video!
+                    )
+                    st.success("🎉 Video ready for sharing!")
+
+        elif send_type == "📝 Quick Paste Text / Code / Clipboard":
+            pasted_title = st.text_input("Title / Note (optional)", placeholder="e.g. Secret Credentials, Python Script, Config")
+            pasted_text = st.text_area("Paste Text, Code, or Links here", height=180, placeholder="Paste whatever text or code you want to share...")
+
+            if st.button("🚀 Generate 6-Digit Code for Text/Code", type="primary", use_container_width=True):
+                if not pasted_text.strip():
+                    st.warning("Please paste some text or code first.")
+                else:
+                    txt_code = FileShareManager.generate_unique_code()
+                    txt_path = os.path.join(SHARED_DIR, f"text_{txt_code}.txt")
+                    with open(txt_path, "w", encoding="utf-8") as tf:
+                        tf.write(pasted_text)
+
+                    generated_share = FileShareManager.create_share(
+                        filepath=txt_path,
+                        filename=(pasted_title.strip() + ".txt") if pasted_title.strip() else "shared_snippet.txt",
+                        expiry_seconds=expiry_sec,
+                        one_time=one_time_dl,
+                        delete_on_expiry=True,
+                        text_content=pasted_text
+                    )
+                    st.success("🎉 Text/Code snippet ready!")
+
+        # ── SHOW GENERATED SHARE CARD ──
+        if generated_share:
+            code_str = generated_share["code"]
+            formatted_code = f"{code_str[:3]} {code_str[3:]}"
+            direct_share_link = f"http://{LOCAL_IP}:8501/?share={code_str}"
+            direct_stream_url = f"http://{LOCAL_IP}:{STREAM_PORT}/dl/{code_str}/{urllib.parse.quote(generated_share['filename'])}"
+
+            st.markdown(f"""
+            <div class="share-pin-box">
+                <div style="font-size: 0.9rem; color: #888; text-transform: uppercase; letter-spacing: 2px;">Your 6-Digit Transfer Key</div>
+                <div class="share-pin-code">{formatted_code}</div>
+                <div style="font-size: 0.95rem; color: #BBB;">Tell the receiver to enter this code in the <b>Receive</b> tab!</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            col_qr, col_info = st.columns([1, 2])
+            with col_qr:
+                qr_bytes = generate_qr_code_image_bytes(direct_share_link)
+                st.image(qr_bytes, caption="📱 Scan with Phone Camera to Receive", use_container_width=True)
+
+            with col_info:
+                st.markdown(f"**📦 File:** `{generated_share['filename']}`")
+                st.markdown(f"**📊 Size:** `{format_bytes_human(generated_share['size'])}`")
+                mins_left = max(1, int((generated_share['expires_at'] - time.time()) / 60))
+                st.markdown(f"**⏱️ Expires in:** `{mins_left} minutes`" + (" (Burn after 1st download)" if generated_share['one_time'] else ""))
+                
+                st.markdown("**🔗 One-Tap Web Link:**")
+                st.code(direct_share_link, language="text")
+
+                if generated_share['type'] == 'file':
+                    st.markdown("**⚡ Resumable Direct Stream URL (IDM / Mobile Browser):**")
+                    st.code(direct_stream_url, language="text")
+
+    # ── SUB-TAB 2: RECEIVE ──
+    with share_tab_recv:
+        st.markdown("### 📥 Receive File or Code")
+        st.caption("Enter the 6-digit key from the sender or scan their QR code to receive the file instantly.")
+
+        # Check if URL parameter pre-fills the code
+        default_recv_code = ""
+        try:
+            if "share" in st.query_params:
+                default_recv_code = str(st.query_params["share"]).strip()
+        except Exception:
+            pass
+
+        col_code_in, col_code_go = st.columns([3, 1])
+        with col_code_in:
+            recv_code_input = st.text_input(
+                "6-Digit Sharing Code",
+                value=default_recv_code,
+                placeholder="e.g. 582 914",
+                label_visibility="collapsed"
+            )
+        with col_code_go:
+            fetch_clicked = st.button("🔍 Get File / Code", type="primary", use_container_width=True)
+
+        target_code = recv_code_input.strip().replace(" ", "").replace("-", "")
+
+        if target_code:
+            entry = FileShareManager.get_share(target_code)
+            if entry:
+                st.success("✅ File found and ready for transfer!")
+
+                st.markdown(f"""
+                <div class="share-file-card">
+                    <h3 style="margin:0 0 8px 0;">📄 {entry['filename']}</h3>
+                    <p style="margin:0; color:#AAA;">
+                        <b>Size:</b> {format_bytes_human(entry['size'])} &nbsp;|&nbsp; 
+                        <b>Downloads:</b> {entry['downloads']} &nbsp;|&nbsp; 
+                        <b>Type:</b> {entry['type'].upper()}
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if entry.get("type") == "text" and entry.get("text_content"):
+                    st.markdown("#### 📝 Shared Content:")
+                    st.code(entry["text_content"], language="text")
+                else:
+                    filepath = entry.get("filepath")
+                    if filepath and os.path.exists(filepath):
+                        fast_url = f"http://{LOCAL_IP}:{STREAM_PORT}/dl/{entry['code']}/{urllib.parse.quote(entry['filename'])}"
+                        
+                        col_dl1, col_dl2 = st.columns(2)
+                        with col_dl1:
+                            st.link_button(
+                                "⚡ Fast Resumable Download (HTTP Stream)",
+                                fast_url,
+                                type="primary",
+                                use_container_width=True,
+                                help="Supports 5GB streaming, pause/resume, and maximum Wi-Fi speed."
+                            )
+                        with col_dl2:
+                            # Streamlit standard download button
+                            try:
+                                with open(filepath, "rb") as f_read:
+                                    if entry['size'] <= 200 * 1024 * 1024:
+                                        data_bytes = f_read.read()
+                                        st.download_button(
+                                            label="💾 Standard Save to Device",
+                                            data=data_bytes,
+                                            file_name=entry['filename'],
+                                            use_container_width=True
+                                        )
+                                    else:
+                                        st.info("💡 For files over 200MB, use the **Fast Resumable Download** button on the left for maximum speed and pause/resume support.")
+                            except Exception as e:
+                                st.error(f"Error reading file: {str(e)}")
+                    else:
+                        st.error("❌ File not found on disk. It may have expired or been deleted.")
+            elif fetch_clicked or target_code:
+                st.error("❌ Invalid or expired 6-digit key. Please check the code and try again.")
+
+    # ── SUB-TAB 3: ACTIVE TRANSFERS & STORAGE ──
+    with share_tab_manage:
+        st.markdown("### 📋 Active Transfers & Storage Manager")
+        active_list = FileShareManager.get_all_active()
+
+        col_m1, col_m2 = st.columns([3, 1])
+        with col_m1:
+            total_shared_size = sum(x.get("size", 0) for x in active_list)
+            st.write(f"Currently **{len(active_list)}** active shared items occupying **{format_bytes_human(total_shared_size)}**.")
+        with col_m2:
+            if st.button("🧹 Clean Expired Files", use_container_width=True):
+                FileShareManager.cleanup_expired_shares()
+                st.success("Cleaned!")
+                st.rerun()
+
+        if active_list:
+            for it in active_list:
+                with st.expander(f"📄 {it['filename']} — Key: `{it['code']}` ({format_bytes_human(it['size'])})"):
+                    mins_rem = max(0, int((it['expires_at'] - time.time()) / 60))
+                    st.write(f"**Expires in:** {mins_rem} minutes | **Downloads:** {it['downloads']} | **One-time:** {it['one_time']}")
+                    if st.button(f"🗑️ Revoke / Delete Key {it['code']}", key=f"del_{it['code']}"):
+                        FileShareManager.delete_share(it['code'])
+                        st.success(f"Revoked {it['code']}")
+                        st.rerun()
+        else:
+            st.caption("No active shared files at the moment.")
+
+# ----------------- TAB 4: BYPASS GUIDE -----------------
 with tab_guide:
     st.markdown("""
     ### 🛡️ Website Protection & Bypass Guide
