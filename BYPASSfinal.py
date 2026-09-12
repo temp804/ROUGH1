@@ -21,6 +21,12 @@ import socketserver
 import urllib.parse
 from typing import Dict, Any, Optional
 import streamlit as st
+
+def is_cloud_deployment():
+    """Detect if running on Streamlit Cloud (headless deployment).
+    Returns True when the environment variable STREAMLIT_SERVER_HEADLESS is set to "true".
+    """
+    return os.getenv("STREAMLIT_SERVER_HEADLESS", "").lower() == "true"
 import qrcode
 
 # Configure page settings
@@ -781,6 +787,235 @@ class ResumableFileServerHandler(http.server.SimpleHTTPRequestHandler):
                 filename = urllib.parse.unquote(raw_fname)
 
                 # Content-Length may be missing (chunked transfer from mobile browsers)
+                uploader_component = """<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    body { margin: 0; padding: 8px; background: transparent; color: #fff; }
+    .drop-area {
+        border: 2px dashed #ff4b4b;
+        border-radius: 12px;
+        padding: 26px 16px;
+        text-align: center;
+        background: rgba(255, 75, 75, 0.05);
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+    .drop-area:hover, .drop-area.active {
+        background: rgba(255, 75, 75, 0.12);
+        border-color: #ff2b2b;
+    }
+    .icon { font-size: 2.4rem; margin-bottom: 6px; }
+    .title { font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .subtitle { font-size: 0.85rem; color: #aaa; margin-bottom: 14px; }
+    .upload-btn {
+        display: inline-block;
+        background: linear-gradient(135deg, #ff4b4b, #d93838);
+        color: #fff;
+        border: none;
+        padding: 10px 24px;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(255, 75, 75, 0.35);
+    }
+    .progress-box { display: none; margin-top: 14px; background: #191c22; border: 1px solid #2d3139; border-radius: 10px; padding: 18px 16px; }
+    .progress-bar-wrap { background: #2D3139; border-radius: 6px; height: 14px; overflow: hidden; margin: 10px 0; }
+    .progress-bar-fill { background: linear-gradient(90deg, #ff4b4b, #ff7b7b); height: 100%; width: 0%; transition: width 0.1s linear; }
+    .stats-row { display: flex; justify-content: space-between; font-size: 0.85rem; color: #bbb; flex-wrap: wrap; gap: 6px; }
+    .result-box { display: none; background: linear-gradient(145deg, #1A1D24, #13151A); border: 2px solid #ff4b4b; border-radius: 12px; padding: 20px 16px; text-align: center; margin-top: 14px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+    .pin-title { font-size: 0.85rem; color: #888; text-transform: uppercase; letter-spacing: 2px; }
+    .pin-val { font-size: 2.8rem; font-weight: 800; letter-spacing: 8px; color: #ff4b4b; font-family: monospace; margin: 8px 0; text-shadow: 0 0 15px rgba(255, 75, 75, 0.4); }
+    .qr-img { max-width: 170px; border-radius: 8px; margin: 10px auto; display: block; background: #fff; padding: 4px; }
+    .link-btn { display: inline-block; margin: 4px; padding: 8px 16px; background: #2D3139; color: #fff; border-radius: 6px; border: none; text-decoration: none; font-size: 0.85rem; cursor: pointer; }
+    .err-box { background: #2a1515; border: 1px solid #ff4b4b; border-radius: 8px; padding: 12px; color: #ff8080; margin-top: 12px; font-size: 0.88rem; display: none; }
+</style>
+</head>
+<body>
+<div id="dropZone" class="drop-area" onclick="document.getElementById('fInput').click()">
+    <div class="icon">🚀</div>
+    <div class="title">Select or Drag &amp; Drop File (Up to 5 GB)</div>
+    <div class="subtitle">On Phone: opens Camera, Gallery, Files &nbsp;|&nbsp; On PC: drag any file here</div>
+    <button type="button" class="upload-btn">📁 Browse / Choose File</button>
+    <input type="file" id="fInput" style="display:none;" onchange="handleFileSelected(this.files)">
+</div>
+
+<div id="progBox" class="progress-box">
+    <div id="fnameDisplay" style="font-weight:700; font-size:1rem; margin-bottom:6px; color:#fff;"></div>
+    <div class="progress-bar-wrap">
+        <div id="progFill" class="progress-bar-fill"></div>
+    </div>
+    <div class="stats-row">
+        <span id="transferredText">0 B / 0 B (0%)</span>
+        <span id="speedText">Connecting...</span>
+        <span id="etaText">Estimating...</span>
+    </div>
+    <div id="indBar" style="display:none; margin-top:8px; font-size:0.8rem; color:#888;">⏳ Uploading — please wait, do not close this page...</div>
+</div>
+
+<div id="errBox" class="err-box"></div>
+
+<div id="resBox" class="result-box">
+    <div class="pin-title">🎉 Upload Complete! 6-Digit Transfer Key:</div>
+    <div id="pinDisplay" class="pin-val">000 000</div>
+    <div style="font-size:0.9rem; color:#bbb; margin-bottom:10px;">
+        Enter this key in the <b>Receive</b> tab on another phone or laptop!
+    </div>
+    <img id="qrImg" class="qr-img" src="" alt="QR Code">
+    <div>
+        <button class="link-btn" onclick="copyShareLink()">📋 Copy One-Tap Link</button>
+        <button class="link-btn" style="background:#ff4b4b; color:#fff;" onclick="window.parent.location.reload()">🔄 Done / Upload Another</button>
+    </div>
+</div>
+
+<script>
+    var shareUrl = "";
+    var uploadedBytes = 0;
+    var totalSize = 0;
+    var startTime = 0;
+
+    function formatBytes(bytes) {
+        if (!bytes || bytes <= 0) return '0 B';
+        var k = 1024;
+        var sizes = ['B', 'KB', 'MB', 'GB'];
+        var i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function showError(msg) {
+        var eb = document.getElementById('errBox');
+        eb.style.display = 'block';
+        eb.innerText = '❌ ' + msg;
+        document.getElementById('dropZone').style.display = 'block';
+        document.getElementById('progBox').style.display = 'none';
+    }
+
+    function handleFileSelected(files) {
+        if (!files || files.length === 0) return;
+        startUpload(files[0]);
+    }
+
+    var dropArea = document.getElementById('dropZone');
+    ['dragenter', 'dragover'].forEach(function(name) {
+        dropArea.addEventListener(name, function(e) { e.preventDefault(); e.stopPropagation(); dropArea.classList.add('active'); }, false);
+    });
+    ['dragleave', 'drop'].forEach(function(name) {
+        dropArea.addEventListener(name, function(e) { e.preventDefault(); e.stopPropagation(); dropArea.classList.remove('active'); }, false);
+    });
+    dropArea.addEventListener('drop', function(e) {
+        handleFileSelected(e.dataTransfer.files);
+    }, false);
+
+    function updateProgress(loaded, total) {
+        var progFill = document.getElementById('progFill');
+        var transferredText = document.getElementById('transferredText');
+        var speedText = document.getElementById('speedText');
+        var etaText = document.getElementById('etaText');
+
+        var elapsed = Math.max(0.1, (Date.now() - startTime) / 1000);
+        var bytesPerSec = loaded / elapsed;
+
+        if (total > 0) {
+            var pct = Math.min(100, (loaded / total) * 100);
+            progFill.style.width = pct.toFixed(1) + '%';
+            transferredText.innerText = formatBytes(loaded) + ' / ' + formatBytes(total) + ' (' + pct.toFixed(1) + '%)';
+            var rem = total - loaded;
+            var eta = Math.round(rem / Math.max(1, bytesPerSec));
+            etaText.innerText = 'ETA: ' + (eta < 60 ? eta + 's' : Math.round(eta/60) + 'm');
+        } else {
+            progFill.style.width = '50%';
+            transferredText.innerText = formatBytes(loaded) + ' uploaded';
+            etaText.innerText = 'Please wait...';
+        }
+        speedText.innerText = formatBytes(bytesPerSec) + '/s';
+    }
+
+    function startUpload(file) {
+        document.getElementById('errBox').style.display = 'none';
+        document.getElementById('dropZone').style.display = 'none';
+        var progBox = document.getElementById('progBox');
+        progBox.style.display = 'block';
+        document.getElementById('fnameDisplay').innerText = '📤 Uploading: ' + file.name + ' (' + formatBytes(file.size) + ')';
+
+        totalSize = file.size;
+        startTime = Date.now();
+        uploadedBytes = 0;
+
+        var host = window.location.hostname || '{client_ip}';
+        var uploadUrl = 'http://' + host + ':{upload_target_port}/upload?filename=' + encodeURIComponent(file.name);
+
+        var xhr = new XMLHttpRequest();
+
+        xhr.upload.onprogress = function(e) {
+            uploadedBytes = e.loaded;
+            updateProgress(e.loaded, e.lengthComputable ? e.total : totalSize);
+        };
+
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        showSuccess(resp, host);
+                    } catch(err) {
+                        showError('Upload done but response invalid: ' + err + ' | Raw: ' + xhr.responseText.slice(0, 200));
+                    }
+                } else {
+                    showError('Server error HTTP ' + xhr.status + ': ' + (xhr.responseText || xhr.statusText).slice(0, 300));
+                }
+            }
+        };
+
+        xhr.onerror = function() {
+            showError('Network error — could not reach upload server at ' + uploadUrl + '. Make sure you are on the same Wi‑Fi network as the PC running this app.');
+        };
+
+        xhr.ontimeout = function() {
+            showError('Connection timed out. For very large files (>1 GB) please ensure a stable Wi‑Fi connection.');
+        };
+
+        xhr.timeout = 0;
+
+        xhr.open('POST', uploadUrl, true);
+        xhr.send(file);
+
+        var indTimer = setTimeout(function() {
+            if (uploadedBytes === 0) {
+                document.getElementById('indBar').style.display = 'block';
+            }
+        }, 3000);
+    }
+
+    function showSuccess(resp, host) {
+        document.getElementById('progBox').style.display = 'none';
+        var resBox = document.getElementById('resBox');
+        resBox.style.display = 'block';
+
+        var code = resp.code;
+        var formatted = code.slice(0, 3) + ' ' + code.slice(3);
+        document.getElementById('pinDisplay').innerText = formatted;
+
+        shareUrl = 'http://' + host + ':8501/?share=' + code;
+        document.getElementById('qrImg').src =
+            'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(shareUrl);
+    }
+
+    function copyShareLink() {
+        if (navigator.clipboard && shareUrl) {
+            navigator.clipboard.writeText(shareUrl).then(function() {
+                alert('Copied: ' + shareUrl);
+            }).catch(function() {
+                prompt('Copy this link:', shareUrl);
+            });
+        } else if (shareUrl) {
+            prompt('Copy this link:', shareUrl);
+        }
+    }
+</script>
+</body>
+</html>"""
                 cl_header = self.headers.get("Content-Length") or self.headers.get("content-length")
                 content_len = int(cl_header) if cl_header else -1  # -1 = unknown, read until EOF
 
@@ -1870,16 +2105,7 @@ with tab_share:
         generated_share = None
 
         if send_type == "📱 Upload File from Phone or Laptop (Photos, Videos, Files)":
-            st.info("⚡ **Fast 5GB Chunked Uploader**: Upload any file, video, or photo (up to 5 GB) with live progress, real-time speed, and zero RAM limits!")
-
-            client_ip = get_effective_host_ip()
-            upload_target_port = STREAM_PORT
-
-            import streamlit.components.v1 as _components
-            uploader_component = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
+            uploader_component = """<head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
