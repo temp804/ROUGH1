@@ -765,7 +765,89 @@ class ResumableFileServerHandler(http.server.SimpleHTTPRequestHandler):
             FileShareManager.record_download(entry.get("code"))
         return super().do_GET()
 
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.end_headers()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.strip("/") == "upload":
+            try:
+                q = urllib.parse.parse_qs(parsed.query)
+                raw_fname = q.get("filename", ["uploaded_file.bin"])[0]
+                filename = urllib.parse.unquote(raw_fname)
+
+                # Content-Length may be missing (chunked transfer from mobile browsers)
+                cl_header = self.headers.get("Content-Length") or self.headers.get("content-length")
+                content_len = int(cl_header) if cl_header else -1  # -1 = unknown, read until EOF
+
+                safe_fname = filename.replace(" ", "_")
+                # Use a temp name first so we can register after writing
+                tmp_code = uuid.uuid4().hex[:8]
+                dest_path = os.path.join(SHARED_DIR, f"tmp_{tmp_code}_{safe_fname}")
+
+                bytes_read = 0
+                chunk_size = 256 * 1024  # 256KB chunks for better large-file throughput
+
+                with open(dest_path, "wb") as f_out:
+                    if content_len > 0:
+                        # Known size: read exactly content_len bytes
+                        remaining = content_len
+                        while remaining > 0:
+                            to_read = min(remaining, chunk_size)
+                            chunk = self.rfile.read(to_read)
+                            if not chunk:
+                                break
+                            f_out.write(chunk)
+                            remaining -= len(chunk)
+                            bytes_read += len(chunk)
+                    else:
+                        # Unknown size (chunked / mobile): read until connection closes
+                        while True:
+                            chunk = self.rfile.read(chunk_size)
+                            if not chunk:
+                                break
+                            f_out.write(chunk)
+                            bytes_read += len(chunk)
+
+                # Register share (generates a clean 6-digit code)
+                share_entry = FileShareManager.create_share(
+                    filepath=dest_path,
+                    filename=filename,
+                    expiry_seconds=3600,
+                    one_time=False,
+                    delete_on_expiry=True
+                )
+                code = share_entry["code"]
+
+                resp_data = json.dumps({
+                    "status": "success",
+                    "code": code,
+                    "filename": filename,
+                    "size": bytes_read
+                }).encode("utf-8")
+
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Headers", "*")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_data)))
+                self.end_headers()
+                self.wfile.write(resp_data)
+                return
+            except Exception as e:
+                try:
+                    self.send_error(500, str(e))
+                except Exception:
+                    pass
+                return
+        return self.send_error(404, "Not found")
+
     def end_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
         parsed = urllib.parse.urlparse(self.path)
         parts = [p for p in parsed.path.strip("/").split("/") if p]
         if len(parts) >= 2 and parts[0] == "dl":
@@ -1788,35 +1870,324 @@ with tab_share:
         generated_share = None
 
         if send_type == "📱 Upload File from Phone or Laptop (Photos, Videos, Files)":
-            st.info("💡 **Mobile & PC File Uploader**: Choose photos, videos, or documents directly from your phone or computer to share with another device.")
-            uploaded_file = st.file_uploader(
-                "Choose file (Photo, Video, Document, Zip)",
-                type=None,
-                help="On mobile, this opens your photo gallery, camera, or file manager."
-            )
+            st.info("⚡ **Fast 5GB Chunked Uploader**: Upload any file, video, or photo (up to 5 GB) with live progress, real-time speed, and zero RAM limits!")
 
-            if uploaded_file is not None:
-                file_size_fmt = format_bytes_human(getattr(uploaded_file, "size", 0))
-                st.caption(f"Selected: **{uploaded_file.name}** ({file_size_fmt})")
+            client_ip = get_effective_host_ip()
+            upload_target_port = STREAM_PORT
 
-                if st.button("🚀 Generate 6-Digit Code & Share File", type="primary", use_container_width=True):
-                    stream_progress = st.progress(0)
-                    stream_status = st.empty()
-                    safe_filename = uploaded_file.name.replace(" ", "_")
-                    code = FileShareManager.generate_unique_code()
-                    dest_file_path = os.path.join(SHARED_DIR, f"{code}_{safe_filename}")
+            import streamlit.components.v1 as _components
+            uploader_component = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * {{ box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }}
+                body {{ margin: 0; padding: 8px; background: transparent; color: #fff; }}
+                .drop-area {{
+                    border: 2px dashed #ff4b4b;
+                    border-radius: 12px;
+                    padding: 26px 16px;
+                    text-align: center;
+                    background: rgba(255, 75, 75, 0.05);
+                    cursor: pointer;
+                    transition: all 0.2s ease;
+                }}
+                .drop-area:hover, .drop-area.active {{
+                    background: rgba(255, 75, 75, 0.12);
+                    border-color: #ff2b2b;
+                }}
+                .icon {{ font-size: 2.4rem; margin-bottom: 6px; }}
+                .title {{ font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 4px; }}
+                .subtitle {{ font-size: 0.85rem; color: #aaa; margin-bottom: 14px; }}
+                .upload-btn {{
+                    display: inline-block;
+                    background: linear-gradient(135deg, #ff4b4b, #d93838);
+                    color: #fff;
+                    border: none;
+                    padding: 10px 24px;
+                    border-radius: 8px;
+                    font-size: 0.95rem;
+                    font-weight: 700;
+                    cursor: pointer;
+                    box-shadow: 0 4px 12px rgba(255, 75, 75, 0.35);
+                }}
+                .progress-box {{
+                    display: none;
+                    margin-top: 14px;
+                    background: #191c22;
+                    border: 1px solid #2d3139;
+                    border-radius: 10px;
+                    padding: 18px 16px;
+                }}
+                .progress-bar-wrap {{
+                    background: #2D3139;
+                    border-radius: 6px;
+                    height: 14px;
+                    overflow: hidden;
+                    margin: 10px 0;
+                }}
+                .progress-bar-fill {{
+                    background: linear-gradient(90deg, #ff4b4b, #ff7b7b);
+                    height: 100%;
+                    width: 0%;
+                    transition: width 0.1s linear;
+                }}
+                .stats-row {{
+                    display: flex;
+                    justify-content: space-between;
+                    font-size: 0.85rem;
+                    color: #bbb;
+                    flex-wrap: wrap;
+                    gap: 6px;
+                }}
+                .result-box {{
+                    display: none;
+                    background: linear-gradient(145deg, #1A1D24, #13151A);
+                    border: 2px solid #ff4b4b;
+                    border-radius: 12px;
+                    padding: 20px 16px;
+                    text-align: center;
+                    margin-top: 14px;
+                    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+                }}
+                .pin-title {{
+                    font-size: 0.85rem;
+                    color: #888;
+                    text-transform: uppercase;
+                    letter-spacing: 2px;
+                }}
+                .pin-val {{
+                    font-size: 2.8rem;
+                    font-weight: 800;
+                    letter-spacing: 8px;
+                    color: #ff4b4b;
+                    font-family: monospace;
+                    margin: 8px 0;
+                    text-shadow: 0 0 15px rgba(255, 75, 75, 0.4);
+                }}
+                .qr-img {{
+                    max-width: 170px;
+                    border-radius: 8px;
+                    margin: 10px auto;
+                    display: block;
+                    background: #fff;
+                    padding: 4px;
+                }}
+                .link-btn {{
+                    display: inline-block;
+                    margin: 4px;
+                    padding: 8px 16px;
+                    background: #2D3139;
+                    color: #fff;
+                    border-radius: 6px;
+                    border: none;
+                    text-decoration: none;
+                    font-size: 0.85rem;
+                    cursor: pointer;
+                }}
+                .err-box {{
+                    background: #2a1515;
+                    border: 1px solid #ff4b4b;
+                    border-radius: 8px;
+                    padding: 12px;
+                    color: #ff8080;
+                    margin-top: 12px;
+                    font-size: 0.88rem;
+                    display: none;
+                }}
+            </style>
+            </head>
+            <body>
+            <div id="dropZone" class="drop-area" onclick="document.getElementById('fInput').click()">
+                <div class="icon">🚀</div>
+                <div class="title">Select or Drag &amp; Drop File (Up to 5 GB)</div>
+                <div class="subtitle">On Phone: opens Camera, Gallery, or Files &nbsp;|&nbsp; On PC: drag any file here</div>
+                <button type="button" class="upload-btn">📁 Browse / Choose File</button>
+                <input type="file" id="fInput" style="display:none;" onchange="handleFileSelected(this.files)">
+            </div>
 
-                    with st.spinner("Streaming file in 8MB chunks to storage..."):
-                        bytes_saved = stream_upload_to_disk(uploaded_file, dest_file_path, stream_progress, stream_status)
+            <div id="progBox" class="progress-box">
+                <div id="fnameDisplay" style="font-weight:700; font-size:1rem; margin-bottom:6px; color:#fff;"></div>
+                <div class="progress-bar-wrap">
+                    <div id="progFill" class="progress-bar-fill"></div>
+                </div>
+                <div class="stats-row">
+                    <span id="transferredText">0 B / 0 B (0%)</span>
+                    <span id="speedText">Connecting...</span>
+                    <span id="etaText">Estimating...</span>
+                </div>
+                <div id="indBar" style="display:none; margin-top:8px; font-size:0.8rem; color:#888;">⏳ Uploading — please wait, do not close this page...</div>
+            </div>
 
-                    generated_share = FileShareManager.create_share(
-                        filepath=dest_file_path,
-                        filename=uploaded_file.name,
-                        expiry_seconds=expiry_sec,
-                        one_time=one_time_dl,
-                        delete_on_expiry=True
-                    )
-                    st.success("🎉 File ready for transfer!")
+            <div id="errBox" class="err-box"></div>
+
+            <div id="resBox" class="result-box">
+                <div class="pin-title">🎉 Upload Complete! 6-Digit Transfer Key:</div>
+                <div id="pinDisplay" class="pin-val">000 000</div>
+                <div style="font-size:0.9rem; color:#bbb; margin-bottom:10px;">
+                    Enter this key in the <b>Receive</b> tab on another phone or laptop!
+                </div>
+                <img id="qrImg" class="qr-img" src="" alt="QR Code">
+                <div>
+                    <button class="link-btn" onclick="copyShareLink()">📋 Copy One-Tap Link</button>
+                    <button class="link-btn" style="background:#ff4b4b; color:#fff;" onclick="window.parent.location.reload()">🔄 Done / Upload Another</button>
+                </div>
+            </div>
+
+            <script>
+                var shareUrl = "";
+                var uploadedBytes = 0;
+                var totalSize = 0;
+                var startTime = 0;
+
+                function formatBytes(bytes) {{
+                    if (!bytes || bytes <= 0) return '0 B';
+                    var k = 1024;
+                    var sizes = ['B', 'KB', 'MB', 'GB'];
+                    var i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+                }}
+
+                function showError(msg) {{
+                    var eb = document.getElementById('errBox');
+                    eb.style.display = 'block';
+                    eb.innerText = '❌ ' + msg;
+                    document.getElementById('dropZone').style.display = 'block';
+                    document.getElementById('progBox').style.display = 'none';
+                }}
+
+                function handleFileSelected(files) {{
+                    if (!files || files.length === 0) return;
+                    startUpload(files[0]);
+                }}
+
+                var dropArea = document.getElementById('dropZone');
+                ['dragenter', 'dragover'].forEach(function(name) {{
+                    dropArea.addEventListener(name, function(e) {{ e.preventDefault(); e.stopPropagation(); dropArea.classList.add('active'); }}, false);
+                }});
+                ['dragleave', 'drop'].forEach(function(name) {{
+                    dropArea.addEventListener(name, function(e) {{ e.preventDefault(); e.stopPropagation(); dropArea.classList.remove('active'); }}, false);
+                }});
+                dropArea.addEventListener('drop', function(e) {{
+                    handleFileSelected(e.dataTransfer.files);
+                }}, false);
+
+                function updateProgress(loaded, total) {{
+                    var progFill = document.getElementById('progFill');
+                    var transferredText = document.getElementById('transferredText');
+                    var speedText = document.getElementById('speedText');
+                    var etaText = document.getElementById('etaText');
+
+                    var elapsed = Math.max(0.1, (Date.now() - startTime) / 1000);
+                    var bytesPerSec = loaded / elapsed;
+
+                    if (total > 0) {{
+                        var pct = Math.min(100, (loaded / total) * 100);
+                        progFill.style.width = pct.toFixed(1) + '%';
+                        transferredText.innerText = formatBytes(loaded) + ' / ' + formatBytes(total) + ' (' + pct.toFixed(1) + '%)';
+                        var rem = total - loaded;
+                        var eta = Math.round(rem / Math.max(1, bytesPerSec));
+                        etaText.innerText = 'ETA: ' + (eta < 60 ? eta + 's' : Math.round(eta/60) + 'm');
+                    }} else {{
+                        progFill.style.width = '50%';
+                        transferredText.innerText = formatBytes(loaded) + ' uploaded';
+                        etaText.innerText = 'Please wait...';
+                    }}
+                    speedText.innerText = formatBytes(bytesPerSec) + '/s';
+                }}
+
+                function startUpload(file) {{
+                    document.getElementById('errBox').style.display = 'none';
+                    document.getElementById('dropZone').style.display = 'none';
+                    var progBox = document.getElementById('progBox');
+                    progBox.style.display = 'block';
+                    document.getElementById('fnameDisplay').innerText = '📤 Uploading: ' + file.name + ' (' + formatBytes(file.size) + ')';
+
+                    totalSize = file.size;
+                    startTime = Date.now();
+                    uploadedBytes = 0;
+
+                    var host = window.location.hostname || '{client_ip}';
+                    var uploadUrl = 'http://' + host + ':{upload_target_port}/upload?filename=' + encodeURIComponent(file.name);
+
+                    // ── Use XMLHttpRequest with progress tracking ──
+                    // Fetch API does not support upload progress on all mobile browsers.
+                    var xhr = new XMLHttpRequest();
+
+                    xhr.upload.onprogress = function(e) {{
+                        uploadedBytes = e.loaded;
+                        updateProgress(e.loaded, e.lengthComputable ? e.total : totalSize);
+                    }};
+
+                    xhr.onreadystatechange = function() {{
+                        if (xhr.readyState === 4) {{
+                            if (xhr.status >= 200 && xhr.status < 300) {{
+                                try {{
+                                    var resp = JSON.parse(xhr.responseText);
+                                    showSuccess(resp, host);
+                                }} catch(err) {{
+                                    showError('Upload done but response invalid: ' + err + ' | Raw: ' + xhr.responseText.slice(0, 200));
+                                }}
+                            }} else {{
+                                showError('Server error HTTP ' + xhr.status + ': ' + (xhr.responseText || xhr.statusText).slice(0, 300));
+                            }}
+                        }}
+                    }};
+
+                    xhr.onerror = function() {{
+                        showError('Network error — could not reach upload server at ' + uploadUrl + '. Make sure you are on the same Wi-Fi network as the PC running this app.');
+                    }};
+
+                    xhr.ontimeout = function() {{
+                        showError('Connection timed out. For very large files (>1 GB) please ensure a stable Wi-Fi connection.');
+                    }};
+
+                    // No timeout for large files — let it run until done
+                    xhr.timeout = 0;
+
+                    xhr.open('POST', uploadUrl, true);
+                    // NOTE: Do NOT manually set Content-Length — the browser sets it correctly.
+                    // Setting it manually can cause issues on some mobile browsers.
+                    xhr.send(file);
+
+                    // Animate indeterminate bar if no progress events fire within 3s
+                    var indTimer = setTimeout(function() {{
+                        if (uploadedBytes === 0) {{
+                            document.getElementById('indBar').style.display = 'block';
+                        }}
+                    }}, 3000);
+                }}
+
+                function showSuccess(resp, host) {{
+                    document.getElementById('progBox').style.display = 'none';
+                    var resBox = document.getElementById('resBox');
+                    resBox.style.display = 'block';
+
+                    var code = resp.code;
+                    var formatted = code.slice(0, 3) + ' ' + code.slice(3);
+                    document.getElementById('pinDisplay').innerText = formatted;
+
+                    shareUrl = 'http://' + host + ':8501/?share=' + code;
+                    document.getElementById('qrImg').src =
+                        'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(shareUrl);
+                }}
+
+                function copyShareLink() {{
+                    if (navigator.clipboard && shareUrl) {{
+                        navigator.clipboard.writeText(shareUrl).then(function() {{
+                            alert('Copied: ' + shareUrl);
+                        }}).catch(function() {{ prompt('Copy this link:', shareUrl); }});
+                    }} else if (shareUrl) {{
+                        prompt('Copy this link:', shareUrl);
+                    }}
+                }}
+            </script>
+            </body>
+            </html>
+            """
+            _components.html(uploader_component, height=420, scrolling=False)
 
         elif send_type == "💻 Share Local File on Laptop (Zero RAM, Instant, Up to 50 GB)":
             st.info("⚡ **Zero-RAM Instant Share**: Share any file on your computer (videos, large ISOs, zips, datasets up to 50 GB) with 0 seconds wait time and 0 MB RAM usage!")
@@ -1979,42 +2350,39 @@ with tab_share:
                     if filepath and os.path.exists(filepath):
                         active_host = get_effective_host_ip()
                         fast_url = f"http://{active_host}:{STREAM_PORT}/dl/{entry['code']}/{urllib.parse.quote(entry['filename'])}"
-                        
-                        col_dl1, col_dl2 = st.columns([3, 2])
-                        with col_dl1:
-                            # 100% Zero-RAM Streaming Download Button
-                            # Uses HTML5 download attribute and chunked stream directly from background server
-                            # Browser immediately downloads file to Downloads folder without navigating or opening new tabs
-                            st.markdown(f"""
-                            <a href="{fast_url}" download="{entry['filename']}" style="
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                width: 100%;
-                                height: 42px;
-                                font-size: 0.95rem;
-                                font-weight: 600;
-                                color: #ffffff !important;
-                                background: linear-gradient(135deg, #ff4b4b, #d93838);
-                                border: none;
-                                border-radius: 8px;
-                                text-decoration: none !important;
-                                cursor: pointer;
-                                text-align: center;
-                                box-sizing: border-box;
-                                box-shadow: 0 2px 8px rgba(255, 75, 75, 0.3);
-                                transition: all 0.2s ease;
-                            ">
-                                💾 Download File ({format_bytes_human(entry['size'])})
+
+                        # Single unified download button — works for ALL file sizes (small to 50GB)
+                        # HTML5 anchor → streaming server → zero RAM, no size restriction message
+                        st.markdown(f"""
+                        <a href="{fast_url}" download="{entry['filename']}" style="
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            width: 100%;
+                            min-height: 52px;
+                            padding: 14px 20px;
+                            font-size: 1.05rem;
+                            font-weight: 700;
+                            color: #ffffff !important;
+                            background: linear-gradient(135deg, #ff4b4b, #d93838);
+                            border: none;
+                            border-radius: 10px;
+                            text-decoration: none !important;
+                            cursor: pointer;
+                            text-align: center;
+                            box-sizing: border-box;
+                            box-shadow: 0 4px 16px rgba(255, 75, 75, 0.4);
+                            transition: all 0.2s ease;
+                            margin-bottom: 8px;
+                        ">
+                            💾 Download — {entry['filename']} ({format_bytes_human(entry['size'])})
+                        </a>
+                        <div style="text-align:center; margin-top:4px;">
+                            <a href="{fast_url}" style="color:#888; font-size:0.78rem; text-decoration:none;">
+                                🔗 Direct stream link (IDM / curl / external download managers)
                             </a>
-                            """, unsafe_allow_html=True)
-                        with col_dl2:
-                            st.link_button(
-                                "⚡ Fast HTTP Stream",
-                                fast_url,
-                                use_container_width=True,
-                                help="Direct stream link with pause/resume support for external download managers (IDM, curl, etc.)."
-                            )
+                        </div>
+                        """, unsafe_allow_html=True)
                     else:
                         st.error("❌ File not found on disk. It may have expired or been deleted.")
             elif fetch_clicked or target_code:
