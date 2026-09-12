@@ -164,6 +164,18 @@ st.markdown("""
         padding: 16px 20px;
         margin-bottom: 15px;
     }
+    @media (max-width: 600px) {
+        .share-pin-code {
+            font-size: 2.3rem !important;
+            letter-spacing: 6px !important;
+        }
+        .share-pin-box {
+            padding: 16px 10px !important;
+        }
+        .share-file-card {
+            padding: 12px 14px !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -777,6 +789,19 @@ def get_local_network_ip() -> str:
     except Exception:
         return "127.0.0.1"
 
+def get_effective_host_ip() -> str:
+    """Dynamically determine the host IP that the client used to access the app."""
+    try:
+        if hasattr(st, "context") and hasattr(st.context, "headers") and st.context.headers:
+            host_h = st.context.headers.get("host") or st.context.headers.get("Host")
+            if host_h:
+                h_only = host_h.split(":")[0].strip()
+                if h_only and h_only not in ("localhost", "127.0.0.1", "0.0.0.0"):
+                    return h_only
+    except Exception:
+        pass
+    return get_local_network_ip()
+
 def generate_qr_code_image_bytes(data_url: str) -> bytes:
     qr = qrcode.QRCode(
         version=1,
@@ -1324,8 +1349,54 @@ def fetch_media_info_with_failover(url: str, proxy_list: list) -> tuple[Optional
 
 # ----------------- MAIN UI -----------------
 
-st.markdown('<div class="main-header">🎬 Universal Video Downloader</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Download videos from YouTube, social media, adult platforms, and 1000+ sites with resolution control and anti-blocking bypass.</div>', unsafe_allow_html=True)
+# ── INSTANT ONE-TAP MOBILE / PC RECEIVE BANNER (QR CODE / DIRECT LINK) ──
+query_share_code = ""
+try:
+    if "share" in st.query_params and st.query_params["share"]:
+        query_share_code = str(st.query_params["share"]).strip().replace(" ", "").replace("-", "")
+except Exception:
+    pass
+
+if query_share_code:
+    shared_entry = FileShareManager.get_share(query_share_code)
+    if shared_entry:
+        curr_client_ip = get_effective_host_ip()
+        fast_dl_link = f"http://{curr_client_ip}:{STREAM_PORT}/dl/{shared_entry['code']}/{urllib.parse.quote(shared_entry['filename'])}"
+        
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1f242d, #14171d); border: 2px solid #ff4b4b; border-radius: 14px; padding: 18px 20px; margin-bottom: 24px; box-shadow: 0 6px 24px rgba(255, 75, 75, 0.3);">
+            <div style="color: #ff4b4b; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1.5px;">
+                🎉 Incoming Shared File (Key: {shared_entry['code']})
+            </div>
+            <div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; margin: 6px 0;">
+                📄 {shared_entry['filename']}
+            </div>
+            <div style="color: #bbb; font-size: 0.9rem; margin-bottom: 12px;">
+                Size: <b>{format_bytes_human(shared_entry['size'])}</b> &nbsp;|&nbsp; Downloads: <b>{shared_entry['downloads']}</b>
+            </div>
+            <a href="{fast_dl_link}" download="{shared_entry['filename']}" style="
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 100%;
+                min-height: 48px;
+                padding: 12px 18px;
+                font-size: 1.05rem;
+                font-weight: 700;
+                color: #ffffff !important;
+                background: linear-gradient(135deg, #ff4b4b, #d93838);
+                border: none;
+                border-radius: 8px;
+                text-decoration: none !important;
+                cursor: pointer;
+                text-align: center;
+                box-sizing: border-box;
+                box-shadow: 0 4px 14px rgba(255, 75, 75, 0.4);
+            ">
+                💾 One-Tap Instant Download ({format_bytes_human(shared_entry['size'])})
+            </a>
+        </div>
+        """, unsafe_allow_html=True)
 
 tab_single, tab_batch, tab_share, tab_guide = st.tabs([
     "🚀 Single URL Downloader",
@@ -1688,8 +1759,8 @@ with tab_share:
         send_type = st.radio(
             "What would you like to share?",
             [
-                "💻 Share File on Laptop / PC (Zero RAM, Instant, Up to 50 GB)",
-                "📁 Upload File from Browser (Drag & Drop)",
+                "📱 Upload File from Phone or Laptop (Photos, Videos, Files)",
+                "💻 Share Local File on Laptop (Zero RAM, Instant, Up to 50 GB)",
                 "📝 Quick Paste Text / Code / Clipboard"
             ],
             horizontal=True
@@ -1716,7 +1787,38 @@ with tab_share:
 
         generated_share = None
 
-        if send_type == "💻 Share File on Laptop / PC (Zero RAM, Instant, Up to 50 GB)":
+        if send_type == "📱 Upload File from Phone or Laptop (Photos, Videos, Files)":
+            st.info("💡 **Mobile & PC File Uploader**: Choose photos, videos, or documents directly from your phone or computer to share with another device.")
+            uploaded_file = st.file_uploader(
+                "Choose file (Photo, Video, Document, Zip)",
+                type=None,
+                help="On mobile, this opens your photo gallery, camera, or file manager."
+            )
+
+            if uploaded_file is not None:
+                file_size_fmt = format_bytes_human(getattr(uploaded_file, "size", 0))
+                st.caption(f"Selected: **{uploaded_file.name}** ({file_size_fmt})")
+
+                if st.button("🚀 Generate 6-Digit Code & Share File", type="primary", use_container_width=True):
+                    stream_progress = st.progress(0)
+                    stream_status = st.empty()
+                    safe_filename = uploaded_file.name.replace(" ", "_")
+                    code = FileShareManager.generate_unique_code()
+                    dest_file_path = os.path.join(SHARED_DIR, f"{code}_{safe_filename}")
+
+                    with st.spinner("Streaming file in 8MB chunks to storage..."):
+                        bytes_saved = stream_upload_to_disk(uploaded_file, dest_file_path, stream_progress, stream_status)
+
+                    generated_share = FileShareManager.create_share(
+                        filepath=dest_file_path,
+                        filename=uploaded_file.name,
+                        expiry_seconds=expiry_sec,
+                        one_time=one_time_dl,
+                        delete_on_expiry=True
+                    )
+                    st.success("🎉 File ready for transfer!")
+
+        elif send_type == "💻 Share Local File on Laptop (Zero RAM, Instant, Up to 50 GB)":
             st.info("⚡ **Zero-RAM Instant Share**: Share any file on your computer (videos, large ISOs, zips, datasets up to 50 GB) with 0 seconds wait time and 0 MB RAM usage!")
             
             local_src = st.radio(
@@ -1770,37 +1872,6 @@ with tab_share:
                     )
                     st.success("🎉 Share key generated instantly!")
 
-        elif send_type == "📁 Upload File from Browser (Drag & Drop)":
-            st.info("💡 **Browser Upload**: Suitable for files up to 500MB. For larger files (1 GB - 5 GB+), use the **'💻 Share File on Laptop / PC'** option above for instant sharing with zero RAM usage!")
-            uploaded_file = st.file_uploader(
-                "Select or Drag & Drop File (Any format)",
-                type=None,
-                help="For files over 500MB on this PC, use the Local File option for zero RAM overhead."
-            )
-
-            if uploaded_file is not None:
-                file_size_fmt = format_bytes_human(getattr(uploaded_file, "size", 0))
-                st.caption(f"Selected: **{uploaded_file.name}** ({file_size_fmt})")
-
-                if st.button("🚀 Generate 6-Digit Code & Share File", type="primary", use_container_width=True):
-                    stream_progress = st.progress(0)
-                    stream_status = st.empty()
-                    safe_filename = uploaded_file.name.replace(" ", "_")
-                    code = FileShareManager.generate_unique_code()
-                    dest_file_path = os.path.join(SHARED_DIR, f"{code}_{safe_filename}")
-
-                    with st.spinner("Streaming file in 8MB chunks to storage..."):
-                        bytes_saved = stream_upload_to_disk(uploaded_file, dest_file_path, stream_progress, stream_status)
-
-                    generated_share = FileShareManager.create_share(
-                        filepath=dest_file_path,
-                        filename=uploaded_file.name,
-                        expiry_seconds=expiry_sec,
-                        one_time=one_time_dl,
-                        delete_on_expiry=True
-                    )
-                    st.success("🎉 File ready for transfer!")
-
         elif send_type == "📝 Quick Paste Text / Code / Clipboard":
             pasted_title = st.text_input("Title / Note (optional)", placeholder="e.g. Secret Credentials, Python Script, Config")
             pasted_text = st.text_area("Paste Text, Code, or Links here", height=180, placeholder="Paste whatever text or code you want to share...")
@@ -1828,8 +1899,9 @@ with tab_share:
         if generated_share:
             code_str = generated_share["code"]
             formatted_code = f"{code_str[:3]} {code_str[3:]}"
-            direct_share_link = f"http://{LOCAL_IP}:8501/?share={code_str}"
-            direct_stream_url = f"http://{LOCAL_IP}:{STREAM_PORT}/dl/{code_str}/{urllib.parse.quote(generated_share['filename'])}"
+            active_host = get_effective_host_ip()
+            direct_share_link = f"http://{active_host}:8501/?share={code_str}"
+            direct_stream_url = f"http://{active_host}:{STREAM_PORT}/dl/{code_str}/{urllib.parse.quote(generated_share['filename'])}"
 
             st.markdown(f"""
             <div class="share-pin-box">
@@ -1905,7 +1977,8 @@ with tab_share:
                 else:
                     filepath = entry.get("filepath")
                     if filepath and os.path.exists(filepath):
-                        fast_url = f"http://{LOCAL_IP}:{STREAM_PORT}/dl/{entry['code']}/{urllib.parse.quote(entry['filename'])}"
+                        active_host = get_effective_host_ip()
+                        fast_url = f"http://{active_host}:{STREAM_PORT}/dl/{entry['code']}/{urllib.parse.quote(entry['filename'])}"
                         
                         col_dl1, col_dl2 = st.columns([3, 2])
                         with col_dl1:
