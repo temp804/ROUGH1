@@ -1688,8 +1688,8 @@ with tab_share:
         send_type = st.radio(
             "What would you like to share?",
             [
-                "📁 Upload Any File (Up to 5 GB)",
-                "🎬 Instant-Share Downloaded Video (Zero Wait Time!)",
+                "💻 Share File on Laptop / PC (Zero RAM, Instant, Up to 50 GB)",
+                "📁 Upload File from Browser (Drag & Drop)",
                 "📝 Quick Paste Text / Code / Clipboard"
             ],
             horizontal=True
@@ -1716,12 +1716,66 @@ with tab_share:
 
         generated_share = None
 
-        if send_type == "📁 Upload Any File (Up to 5 GB)":
-            st.info("💡 **5 GB Chunked Streaming**: Files are streamed in 8MB chunks directly to local storage without loading into system RAM.")
+        if send_type == "💻 Share File on Laptop / PC (Zero RAM, Instant, Up to 50 GB)":
+            st.info("⚡ **Zero-RAM Instant Share**: Share any file on your computer (videos, large ISOs, zips, datasets up to 50 GB) with 0 seconds wait time and 0 MB RAM usage!")
+            
+            local_src = st.radio(
+                "Select Source:",
+                ["🎬 App Downloads Folder", "📂 Enter / Paste Any File Path on PC"],
+                horizontal=True
+            )
+
+            chosen_path = None
+            chosen_name = None
+
+            if local_src == "🎬 App Downloads Folder":
+                existing_videos = [
+                    f for f in os.listdir(DOWNLOADS_DIR)
+                    if os.path.isfile(os.path.join(DOWNLOADS_DIR, f))
+                ] if os.path.exists(DOWNLOADS_DIR) else []
+
+                if not existing_videos:
+                    st.warning("⚠️ No downloaded files found in the `downloads/` folder yet. You can download from Tab 1 or paste a file path below!")
+                else:
+                    video_options = {}
+                    for f in existing_videos:
+                        sz = os.path.getsize(os.path.join(DOWNLOADS_DIR, f))
+                        video_options[f"{f} ({format_bytes_human(sz)})"] = (os.path.join(DOWNLOADS_DIR, f), f)
+
+                    selected_label = st.selectbox("Select File / Video", list(video_options.keys()))
+                    if selected_label:
+                        chosen_path, chosen_name = video_options[selected_label]
+            else:
+                user_input_path = st.text_input(
+                    "Paste full file path on your computer",
+                    placeholder=r"e.g. D:\Movies\video.mp4 or C:\Users\Smit\Downloads\large_file.zip"
+                )
+                if user_input_path.strip():
+                    cleaned_p = user_input_path.strip().strip('"').strip("'")
+                    if os.path.isfile(cleaned_p):
+                        chosen_path = cleaned_p
+                        chosen_name = os.path.basename(cleaned_p)
+                        st.success(f"✅ Found: **{chosen_name}** ({format_bytes_human(os.path.getsize(cleaned_p))})")
+                    else:
+                        st.error(f"❌ File not found at `{cleaned_p}`. Please verify the path.")
+
+            if chosen_path and chosen_name:
+                if st.button("🚀 Generate 6-Digit Code (Instant Zero-RAM Share)", type="primary", use_container_width=True):
+                    generated_share = FileShareManager.create_share(
+                        filepath=chosen_path,
+                        filename=chosen_name,
+                        expiry_seconds=expiry_sec,
+                        one_time=one_time_dl,
+                        delete_on_expiry=False
+                    )
+                    st.success("🎉 Share key generated instantly!")
+
+        elif send_type == "📁 Upload File from Browser (Drag & Drop)":
+            st.info("💡 **Browser Upload**: Suitable for files up to 500MB. For larger files (1 GB - 5 GB+), use the **'💻 Share File on Laptop / PC'** option above for instant sharing with zero RAM usage!")
             uploaded_file = st.file_uploader(
-                "Select or Drag & Drop File (Any format, up to 5 GB)",
+                "Select or Drag & Drop File (Any format)",
                 type=None,
-                help="Supports videos, zips, ISOs, documents, datasets up to 5GB"
+                help="For files over 500MB on this PC, use the Local File option for zero RAM overhead."
             )
 
             if uploaded_file is not None:
@@ -1735,7 +1789,7 @@ with tab_share:
                     code = FileShareManager.generate_unique_code()
                     dest_file_path = os.path.join(SHARED_DIR, f"{code}_{safe_filename}")
 
-                    with st.spinner("Streaming file in 8MB chunks..."):
+                    with st.spinner("Streaming file in 8MB chunks to storage..."):
                         bytes_saved = stream_upload_to_disk(uploaded_file, dest_file_path, stream_progress, stream_status)
 
                     generated_share = FileShareManager.create_share(
@@ -1746,36 +1800,6 @@ with tab_share:
                         delete_on_expiry=True
                     )
                     st.success("🎉 File ready for transfer!")
-
-        elif send_type == "🎬 Instant-Share Downloaded Video (Zero Wait Time!)":
-            existing_videos = [
-                f for f in os.listdir(DOWNLOADS_DIR)
-                if os.path.isfile(os.path.join(DOWNLOADS_DIR, f))
-            ] if os.path.exists(DOWNLOADS_DIR) else []
-
-            if not existing_videos:
-                st.warning("⚠️ No downloaded videos found in your `downloads/` folder. Download a video from Tab 1 or upload a file above!")
-            else:
-                video_options = {}
-                for f in existing_videos:
-                    sz = os.path.getsize(os.path.join(DOWNLOADS_DIR, f))
-                    video_options[f"{f} ({format_bytes_human(sz)})"] = f
-
-                selected_label = st.selectbox("Select Video to Share Instantly", list(video_options.keys()))
-                selected_file = video_options[selected_label]
-                selected_path = os.path.join(DOWNLOADS_DIR, selected_file)
-
-                st.info(f"⚡ **Zero Wait Time**: `{selected_file}` is already on your laptop. No re-upload needed!")
-
-                if st.button("🚀 Instant Share Video (Zero Upload Wait!)", type="primary", use_container_width=True):
-                    generated_share = FileShareManager.create_share(
-                        filepath=selected_path,
-                        filename=selected_file,
-                        expiry_seconds=expiry_sec,
-                        one_time=one_time_dl,
-                        delete_on_expiry=False  # Do not delete original downloaded video!
-                    )
-                    st.success("🎉 Video ready for sharing!")
 
         elif send_type == "📝 Quick Paste Text / Code / Clipboard":
             pasted_title = st.text_input("Title / Note (optional)", placeholder="e.g. Secret Credentials, Python Script, Config")
@@ -1885,28 +1909,38 @@ with tab_share:
                         
                         col_dl1, col_dl2 = st.columns([3, 2])
                         with col_dl1:
-                            # Direct download button for ALL file sizes
-                            try:
-                                with open(filepath, "rb") as f_read:
-                                    dl_clicked = st.download_button(
-                                        label=f"💾 Download File ({format_bytes_human(entry['size'])})",
-                                        data=f_read,
-                                        file_name=entry['filename'],
-                                        mime="application/octet-stream",
-                                        type="primary",
-                                        use_container_width=True,
-                                        key=f"dl_btn_{entry['code']}"
-                                    )
-                                    if dl_clicked:
-                                        FileShareManager.record_download(entry['code'])
-                            except Exception as e:
-                                st.error(f"Error preparing download: {str(e)}")
+                            # 100% Zero-RAM Streaming Download Button
+                            # Uses HTML5 download attribute and chunked stream directly from background server
+                            # Browser immediately downloads file to Downloads folder without navigating or opening new tabs
+                            st.markdown(f"""
+                            <a href="{fast_url}" download="{entry['filename']}" style="
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                width: 100%;
+                                height: 42px;
+                                font-size: 0.95rem;
+                                font-weight: 600;
+                                color: #ffffff !important;
+                                background: linear-gradient(135deg, #ff4b4b, #d93838);
+                                border: none;
+                                border-radius: 8px;
+                                text-decoration: none !important;
+                                cursor: pointer;
+                                text-align: center;
+                                box-sizing: border-box;
+                                box-shadow: 0 2px 8px rgba(255, 75, 75, 0.3);
+                                transition: all 0.2s ease;
+                            ">
+                                💾 Download File ({format_bytes_human(entry['size'])})
+                            </a>
+                            """, unsafe_allow_html=True)
                         with col_dl2:
                             st.link_button(
                                 "⚡ Fast HTTP Stream",
                                 fast_url,
                                 use_container_width=True,
-                                help="Direct stream link with pause/resume support for external download managers."
+                                help="Direct stream link with pause/resume support for external download managers (IDM, curl, etc.)."
                             )
                     else:
                         st.error("❌ File not found on disk. It may have expired or been deleted.")
