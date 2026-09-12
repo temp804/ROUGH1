@@ -7,3 +7,10 @@ hideTopBar = true
 
 [browser]
 gatherUsageStats = false
+
+[server]
+maxUploadSize = 5120
+enableCORS = false
+enableXsrfProtection = false
+maxMessageSize = 5120
+
