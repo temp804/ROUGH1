@@ -24,7 +24,7 @@ jobs:
 
       - name: Wake up Streamlit app
         env:
-          APP_URL: https://rough1-t4eyazzut2qdfj4x2z7yka.streamlit.app/
+          APP_URL: https://rough1-22mbdzszf85xrukklkbdgv.streamlit.app/ 
         run: |
           cat <<'PY' > keep_awake.py
           import os
