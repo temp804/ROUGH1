@@ -1314,7 +1314,7 @@ def fetch_media_info_with_failover(url: str, proxy_list: list) -> tuple[Optional
 # ----------------- MAIN UI -----------------
 
 st.markdown('<div class="main-header">🎬 Universal Video Downloader</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Download videos from YouTube, social media, adult platforms, and 1000+ sites with resolution control and anti-blocking bypass.</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Download videos from YouTube, social media,and 1000+ sites with resolution control and anti-blocking bypass.</div>', unsafe_allow_html=True)
 
 tab_single, tab_batch, tab_share, tab_guide = st.tabs([
     "🚀 Single URL Downloader",
