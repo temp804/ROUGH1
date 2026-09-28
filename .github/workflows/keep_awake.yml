@@ -8,6 +8,7 @@ on:
 jobs:
   wake-up:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,9 +23,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install selenium
 
-      - name: Wake up Streamlit app
+      - name: Wake up Streamlit apps
         env:
-          APP_URL: https://rough1-22mbdzszf85xrukklkbdgv.streamlit.app/ 
+          APP_URLS: |
+            https://rough1-22mbdzszf85xrukklkbdgv.streamlit.app/
+            https://rough1-f7duxwjxdqgpkbthksczpc.streamlit.app/
+
         run: |
           cat <<'PY' > keep_awake.py
           import os
@@ -33,40 +37,54 @@ jobs:
           from selenium.webdriver.common.by import By
           from selenium.webdriver.chrome.options import Options
 
-          APP_URL = os.getenv('APP_URL')
+          APP_URLS = [
+              url.strip()
+              for url in os.getenv("APP_URLS", "").splitlines()
+              if url.strip()
+          ]
 
           options = Options()
-          options.add_argument('--headless=new')
-          options.add_argument('--no-sandbox')
-          options.add_argument('--disable-dev-shm-usage')
-          options.add_argument('--disable-gpu')
-          options.add_argument('--window-size=1920,1080')
+          options.add_argument("--headless=new")
+          options.add_argument("--no-sandbox")
+          options.add_argument("--disable-dev-shm-usage")
+          options.add_argument("--disable-gpu")
+          options.add_argument("--window-size=1920,1080")
 
-          # Selenium automatically finds Chrome and configures ChromeDriver
-          driver = webdriver.Chrome(options=options)
+          for app_url in APP_URLS:
+              driver = webdriver.Chrome(options=options)
 
-          try:
-              print(f"Connecting to: {APP_URL}")
-              driver.get(APP_URL)
-              time.sleep(8)
-
-              # Check if the Streamlit sleep button is present
               try:
-                  buttons = driver.find_elements(By.XPATH, "//button[contains(., 'Yes, get this app back up!') or contains(., 'wake up') or contains(., 'Get this app back up')]")
+                  print(f"Connecting to: {app_url}")
+                  driver.get(app_url)
+                  time.sleep(8)
+
+                  buttons = driver.find_elements(
+                      By.XPATH,
+                      "//button[contains(., 'Yes, get this app back up!') "
+                      "or contains(., 'wake up') "
+                      "or contains(., 'Get this app back up')]"
+                  )
+
                   if buttons:
                       buttons[0].click()
-                      print("Clicked 'Yes, get this app back up!' wake-up button!")
+                      print("Clicked Streamlit wake-up button!")
                       time.sleep(10)
                   else:
                       print("Wake-up button not needed — app is already awake.")
-              except Exception as e:
-                  print(f"Check completed: {e}")
 
-              # Keep connection open so Streamlit registers the WebSocket
-              time.sleep(15)
-              print("Page Title:", driver.title)
-              print("Successfully checked in and kept the app awake.")
-          finally:
-              driver.quit()
+                  # Keep connection open
+                  time.sleep(15)
+
+                  print("Page Title:", driver.title)
+                  print(f"Successfully checked: {app_url}")
+
+              except Exception as e:
+                  print(f"Error with {app_url}: {e}")
+
+              finally:
+                  driver.quit()
+
+          print("All Streamlit apps have been checked.")
           PY
+
           python keep_awake.py
