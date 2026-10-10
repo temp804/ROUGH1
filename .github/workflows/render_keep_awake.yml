@@ -1,0 +1,97 @@
+name: Keep Streamlit and Render Awake
+
+on:
+  schedule:
+    - cron: '7,19,31,43,55 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping-render:
+    name: Keep Render Service Awake
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render
+        run: |
+          URL="https://video-downloader-smu9.onrender.com/"
+          echo "Pinging $URL"
+          curl -L --max-time 120 
+            --retry 2 
+            --retry-delay 5 
+            -sS -o /dev/null 
+            -w "HTTP status: %{http_code}\n" 
+            "$URL"
+
+  wake-streamlit:
+    name: Wake Streamlit Apps
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Chrome and Selenium
+        uses: browser-actions/setup-chrome@v2
+
+      - name: Install Selenium
+        run: pip install selenium
+
+      - name: Wake Streamlit apps
+        env:
+          APP_URLS: |
+            https://rough1-22mbdzszf85xrukklkbdgv.streamlit.app/
+            https://rough1-f7duxwjxdqgpkbthksczpc.streamlit.app/
+        run: |
+          cat <<'PY' > keep_awake.py
+          import os
+          import time
+          from selenium import webdriver
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.chrome.options import Options
+
+          urls = [
+              url.strip()
+              for url in os.getenv("APP_URLS", "").splitlines()
+              if url.strip()
+          ]
+
+          options = Options()
+          options.add_argument("--headless=new")
+          options.add_argument("--no-sandbox")
+          options.add_argument("--disable-dev-shm-usage")
+
+          for url in urls:
+              driver = None
+              try:
+                  driver = webdriver.Chrome(options=options)
+                  print(f"Opening {url}")
+                  driver.get(url)
+                  time.sleep(8)
+
+                  buttons = driver.find_elements(
+                      By.XPATH,
+                      "//button[contains(., 'Yes, get this app back up!') "
+                      "or contains(., 'Get this app back up')]"
+                  )
+
+                  if buttons:
+                      buttons[0].click()
+                      print("Clicked Streamlit wake-up button.")
+                      time.sleep(10)
+                  else:
+                      print("No wake-up button found.")
+
+                  print(f"Checked: {url}")
+              except Exception as error:
+                  print(f"Failed for {url}: {error}")
+              finally:
+                  if driver:
+                      driver.quit()
+
+          print("Finished checking Streamlit apps.")
+          PY
+
+          python keep_awake.py
