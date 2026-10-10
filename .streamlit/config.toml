@@ -1,16 +1,31 @@
-[client]
-toolbarMode = "minimal"
-showErrorDetails = false
+# [client]
+# toolbarMode = "minimal"
+# showErrorDetails = false
 
-[ui]
-hideTopBar = true
+# [ui]
+# hideTopBar = true
+
+# [browser]
+# gatherUsageStats = false
+
+# [server]
+# maxUploadSize = 5120
+# enableCORS = false
+# enableXsrfProtection = false
+# maxMessageSize = 5120
+
+[server]
+port = 10000
+address = "0.0.0.0"
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 5120
 
 [browser]
 gatherUsageStats = false
 
-[server]
-maxUploadSize = 5120
-enableCORS = false
-enableXsrfProtection = false
-maxMessageSize = 5120
+[theme]
+base = "dark"
+
 
