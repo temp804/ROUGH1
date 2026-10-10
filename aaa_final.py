@@ -840,8 +840,26 @@ def build_ydl_opts(
 
     if cookie_mode == "Upload cookies.txt" and cookie_file_path:
         opts['cookiefile'] = cookie_file_path
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['web', 'android', 'ios', 'tv'],
+            }
+        }
     elif cookie_mode == "Extract from Local Browser" and browser_name:
         opts['cookiesfrombrowser'] = (browser_name,)
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['web', 'android', 'ios', 'tv'],
+            }
+        }
+    else:
+        # Cloud Datacenter / Render bypass: Android, iOS, TV clients bypass "Sign in to confirm you're not a bot"
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['android', 'ios', 'tv'],
+                'player_skip': ['webpage', 'configs'],
+            }
+        }
 
     if progress_hook:
         opts['progress_hooks'] = [progress_hook]
@@ -1279,6 +1297,24 @@ def fetch_media_info_with_failover(url: str, proxy_list: list) -> tuple[Optional
             except Exception as e:
                 last_error = str(e)
 
+                # Automatic YouTube datacenter anti-bot retry using alternative mobile/tv clients
+                if ("youtube.com" in target_url.lower() or "youtu.be" in target_url.lower()) and ("bot" in last_error.lower() or "sign in" in last_error.lower() or "429" in last_error):
+                    for alt_client in [['android'], ['ios'], ['tv']]:
+                        try:
+                            alt_opts = dict(opts)
+                            alt_opts['extractor_args'] = {
+                                'youtube': {
+                                    'player_client': alt_client,
+                                    'player_skip': ['webpage', 'configs'],
+                                }
+                            }
+                            with yt_dlp.YoutubeDL(alt_opts) as ydl_alt:
+                                info = ydl_alt.extract_info(target_url, download=False)
+                                if info:
+                                    return info, current_proxy
+                        except Exception:
+                            pass
+
                 # Check if it is a TeraBox link that wasn't identified earlier
                 if is_terabox_url(target_url):
                     st.info("📦 Running fallback TeraBox Cloud Extractor...")
@@ -1300,9 +1336,21 @@ def fetch_media_info_with_failover(url: str, proxy_list: list) -> tuple[Optional
                     continue
                 break
 
-    st.error(f"❌ Error fetching metadata: {last_error}")
-    
-    if "Unsupported URL" in str(last_error):
+    import re
+    cleaned_err = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', str(last_error or 'Unknown error'))
+    cleaned_err = cleaned_err.replace('<', '&lt;').replace('>', '&gt;')
+    st.error(f"❌ Error fetching metadata: {cleaned_err}")
+
+    if any(k in cleaned_err.lower() for k in ["sign in to confirm", "bot", "429", "too many requests"]):
+        st.warning("""
+        🛡️ **YouTube Datacenter Protection Notice**:
+        YouTube has flagged this cloud hosting IP (Render / AWS).
+        
+        **How to bypass in 10 seconds:**
+        1. **Enable Free Proxies**: In the left sidebar under **"Proxy Configuration"**, check **"Use Free Proxies"** or add an HTTP/HTTPS proxy.
+        2. **Inject Cookies**: In the left sidebar under **"Authentication & Cookie Injection"**, choose **"Upload cookies.txt"** and upload your exported YouTube browser cookies.
+        """)
+    elif "Unsupported URL" in str(last_error):
         st.info("""
         💡 **Unsupported URL Information**:
         This website uses a custom proprietary player script that does not expose public stream links or standard video hosting iframes.
